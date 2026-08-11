@@ -1,0 +1,9 @@
+mediapipe>=0.10.14
+opencv-python>=4.8.0
+live2d-py>=0.7.0          # Live2D Cubism Native 的 Python 绑定（v3 模型）
+glfw>=2.7                 # OpenGL 窗口/上下文
+PyOpenGL>=3.1.7
+numpy>=1.24
+websocket-client>=1.6.0   # VTS WebSocket 注入
+Pillow>=10.0.0            # 校正向导 PIL 中英文文字渲染
+PySide6>=6.6.0            # GUI 控制面板（VTS 风格）

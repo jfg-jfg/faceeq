@@ -1,0 +1,57 @@
+# ===== 操作系统 =====
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# macOS
+.DS_Store
+# Linux
+*~
+
+# ===== 编辑器 / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 密钥与敏感信息（切勿提交）=====
+.env
+.env.*
+*.pem
+*.key
+secrets/
+.vts_token
+
+# ===== Claude Code（保留团队共享配置，仅忽略本地私有设置）=====
+.claude/settings.local.json
+
+# ===== 日志与临时文件 =====
+*.log
+tmp/
+temp/
+
+# ===== Python =====
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ===== 模型文件（由脚本自动下载，不提交）=====
+models/
+*.task
+
+# ===== 第三方参考代码（live2d-py 官方示例，仅本地参考，不提交）=====
+_ref/
+
+# ===== 校准 profile（本地用户数据，可能含 demographic，不提交）=====
+profiles/*.json
+!profiles/example.json
+presets/*.json
+probes/calibration_result.txt
+FaceEQ.zip
+dist/

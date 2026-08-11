@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-09T00:00:00",
+  "camera": { "source": 0 },
+  "demographic": null,
+  "target_delta": 0.5,
+  "neutral": {
+    "smile": 0.002, "frown": 0.0, "squint": 0.437, "browDn": 0.058,
+    "press": 0.141, "browIn": 0.004, "browUp": 0.033, "eyeWide": 0.002,
+    "sneer": 0.0, "jawOpen": 0.003
+  },
+  "captures": {
+    "smile":   { "neutral": 0.002, "max": 0.785, "delta": 0.783, "gain": 0.64 },
+    "frown":   { "neutral": 0.0,   "max": 0.002, "delta": 0.002, "gain": null },
+    "squint":  { "neutral": 0.437, "max": 0.46,  "delta": 0.023, "gain": null },
+    "browDn":  { "neutral": 0.058, "max": 0.41,  "delta": 0.352, "gain": 1.42 },
+    "press":   { "neutral": 0.141, "max": 0.15,  "delta": 0.009, "gain": null },
+    "browIn":  { "neutral": 0.004, "max": 0.05,  "delta": 0.046, "gain": null },
+    "browUp":  { "neutral": 0.033, "max": 0.52,  "delta": 0.487, "gain": 1.03 },
+    "eyeWide": { "neutral": 0.002, "max": 0.61,  "delta": 0.608, "gain": 0.82 },
+    "sneer":   { "neutral": 0.0,   "max": 0.0,   "delta": 0.0,   "gain": null },
+    "jawOpen": { "neutral": 0.003, "max": 0.57,  "delta": 0.567, "gain": 0.88 }
+  },
+  "au_gains": {
+    "smile": 0.64, "frown": null, "squint": null, "browDn": 1.42,
+    "press": null, "browIn": null, "browUp": 1.03, "eyeWide": 0.82,
+    "sneer": null, "jawOpen": 0.88
+  },
+  "global_gain": null,
+  "smooth": null,
+  "emotion_gains": null
+}
