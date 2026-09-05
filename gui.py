@@ -15,19 +15,25 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from types import SimpleNamespace as NS
 
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
-                               QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPushButton, QScrollArea,
-                               QSlider, QTableWidget, QVBoxLayout, QWidget)
+                               QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
+                               QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+                               QLineEdit, QMainWindow, QMessageBox, QProgressBar,
+                               QPushButton, QScrollArea, QSlider, QSpinBox,
+                               QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from faceeq import emotions, engine, profile as profile_mod
 from faceeq.capture import PHONE_PORT, list_sources, open_source
+from faceeq.hotkeys import (decide_triggers, load_trigger_config,
+                            sanitize_trigger_config, save_trigger_config)
 from faceeq.mapping import base_map
+from faceeq.output import create_output
 from faceeq.smooth import Smoother
+from faceeq.voice import VoiceCapture, list_input_devices
 from faceeq.vts_bridge import VTSBridge
 
 DEFAULT_PROFILE = os.path.join("profiles", "calibration.json")
@@ -128,17 +134,19 @@ def _best_local_ip():
         return "192.168.x.x（cmd 里运行 ipconfig 看 IPv4 地址）"
 
 # —— VTS 风格 QSS（深色 / 圆角 / 蓝高亮）——
+# 对比度原则：正文 ≥ #e8eaf0，次级信息 ≥ #b7c0cf（旧 #a0a8b8 级灰在小屏看不清），禁用态才用暗灰
 QSS = """
-* { font-family: 'Segoe UI','Microsoft YaHei',sans-serif; font-size: 13px; color: #e0e0e0; }
+* { font-family: 'Segoe UI','Microsoft YaHei',sans-serif; font-size: 14px; color: #e8eaf0; }
 QMainWindow, QWidget#central { background: #252a35; }
 QScrollArea { background: #252a35; border: none; }
 QScrollArea > QWidget > QWidget { background: #252a35; }
-QGroupBox { border: 1px solid #3a4050; border-radius: 8px; margin-top: 16px; padding: 14px 10px 10px 10px; background: #2d3340; }
-QGroupBox::title { color: #8a93a4; subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-QLabel { background: transparent; color: #f0f0f0; }
+QGroupBox { border: 1px solid #3a4050; border-radius: 8px; margin-top: 18px; padding: 16px 10px 10px 10px; background: #2d3340; font-size: 14px; }
+QGroupBox::title { color: #cfd6e2; subcontrol-origin: margin; left: 12px; padding: 0 6px; font-weight: 600; }
+QLabel { background: transparent; color: #f2f3f7; }
 QLabel#title { font-size: 22px; font-weight: 700; color: #ffffff; }
-QLabel#subtitle { color: #a0a8b8; }
-QLabel#val { color: #5ab0ff; font-weight: 600; }
+QLabel#subtitle { color: #b7c0cf; font-size: 13px; }
+QLabel#val { color: #79c1ff; font-weight: 700; font-size: 14px; }
+QLabel#hint { color: #c6cfdd; font-size: 13px; }
 QPushButton { background: #4a9eff; color: #ffffff; border: none; border-radius: 6px; padding: 9px 22px; font-weight: 600; }
 QPushButton:hover { background: #62acff; }
 QPushButton:pressed { background: #3a8eef; }
@@ -151,17 +159,24 @@ QSlider::sub-page:horizontal { background: #4a9eff; border-radius: 3px; }
 QSlider::add-page:horizontal { background: #3a4050; border-radius: 3px; }
 QSlider::handle:horizontal { width: 16px; height: 16px; margin: -6px 0; background: #4a9eff; border-radius: 8px; }
 QSlider::handle:horizontal:hover { background: #62acff; }
-QComboBox { background: #3a4050; border: 1px solid #4a5060; border-radius: 4px; padding: 4px 8px; color: #f0f0f0; }
+QComboBox { background: #3a4050; border: 1px solid #4a5060; border-radius: 4px; padding: 4px 8px; color: #f2f3f7; }
 QComboBox:hover { border-color: #4a9eff; }
 QComboBox::drop-down { border: none; width: 20px; }
-QComboBox QAbstractItemView { background: #2d3340; color: #f0f0f0; selection-background-color: #4a9eff; outline: none; }
+QComboBox QAbstractItemView { background: #2d3340; color: #f2f3f7; selection-background-color: #4a9eff; outline: none; }
+QLineEdit, QSpinBox, QDoubleSpinBox { background: #3a4050; border: 1px solid #4a5060; border-radius: 4px; padding: 4px 6px; color: #f2f3f7; selection-background-color: #4a9eff; }
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #4a9eff; }
+QCheckBox { color: #e8eaf0; }
+QProgressBar { background: #3a4050; border: 1px solid #4a5060; border-radius: 4px; color: #ffffff; font-weight: 700; text-align: center; font-size: 12px; }
+QProgressBar::chunk { background: #4a9eff; border-radius: 3px; }
+QTableWidget { background: #2d3340; color: #e8eaf0; gridline-color: #3a4050; }
+QHeaderView::section { background: #3a4050; color: #dfe5ee; font-weight: 600; border: none; padding: 4px; }
 QStatusBar { background: #1e232e; }
-QStatusBar QLabel { color: #a0a8b8; }
+QStatusBar QLabel { color: #c6cfdd; }
 QMessageBox { background: #2d3340; }
-QMessageBox QLabel { color: #f0f0f0; font-size: 14px; }
+QMessageBox QLabel { color: #f2f3f7; font-size: 14px; }
 QMessageBox QPushButton { min-width: 64px; }
 QInputDialog { background: #2d3340; }
-QInputDialog QLabel { color: #f0f0f0; font-size: 14px; }
+QInputDialog QLabel { color: #f2f3f7; font-size: 14px; }
 """
 
 
@@ -202,6 +217,33 @@ class FloatSlider(QWidget):
         self.slider.setValue(int(round(v * self._scale)))
 
 
+OUTPUT_KINDS = [("vts", "VTS (Live2D)"),
+                ("vmc", "VMC → 3D 工具 (Warudo/VNyans/VRM…)"),
+                ("osc", "OSC 自定义 (VRChat FT…)")]
+OUTPUT_DEFAULT_PORT = {"vts": None, "vmc": 39540, "osc": 9000}
+
+
+@dataclass
+class Snapshot:
+    """Params 的线程安全快照（GUI 写、worker 逐帧读）。"""
+    gain: float = 1.4
+    emotion_gains: dict = None
+    smooth: float = 0.4
+    calib: object = None
+    shaping: object = None
+    test: object = None
+    custom_exprs: dict = None
+    custom_act: dict = None
+    output_kind: str = "vts"
+    output_host: str = "127.0.0.1"
+    output_port: int = 39540
+    voice_enabled: bool = False
+    voice_device: object = None
+    voice_sens: float = 1.0
+    voice_strength: float = 0.6
+    hotkey_triggers: dict = None
+
+
 class Params:
     """GUI 写、worker 读的共享参数。threading.Lock 守护（QThread 跑在真 Python 线程）。"""
     def __init__(self):
@@ -215,12 +257,31 @@ class Params:
         self.test = None                                  # (情绪, 强度, 到期时刻) | None
         self.custom_exprs = {}                            # {名字: {情绪: 权重}}
         self.custom_act = {}                              # {名字: 激活度 0..1}
+        self.output_kind = "vts"
+        self.output_host = "127.0.0.1"
+        self.output_port = 39540
+        self.voice_enabled = False
+        self.voice_device = None
+        self.voice_sens = 1.0
+        self.voice_strength = 0.6
+        self.hotkey_triggers = {}
 
-    def snapshot(self):
+    def snapshot(self) -> Snapshot:
         with self._lock:
-            return (self.global_gain, dict(self.emotion_gains), self.smooth,
-                    self.calib, self.shaping, self.test,
-                    dict(self.custom_exprs), dict(self.custom_act))
+            return Snapshot(gain=self.global_gain,
+                            emotion_gains=dict(self.emotion_gains),
+                            smooth=self.smooth, calib=self.calib,
+                            shaping=self.shaping, test=self.test,
+                            custom_exprs=dict(self.custom_exprs),
+                            custom_act=dict(self.custom_act),
+                            output_kind=self.output_kind,
+                            output_host=self.output_host,
+                            output_port=self.output_port,
+                            voice_enabled=self.voice_enabled,
+                            voice_device=self.voice_device,
+                            voice_sens=self.voice_sens,
+                            voice_strength=self.voice_strength,
+                            hotkey_triggers=dict(self.hotkey_triggers))
 
     def set_gain(self, v):
         with self._lock:
@@ -252,6 +313,27 @@ class Params:
         with self._lock:
             self.custom_act[name] = v
 
+    def set_output(self, kind, host, port):
+        with self._lock:
+            self.output_kind = kind
+            self.output_host = host
+            self.output_port = port
+
+    def set_voice(self, enabled=None, device=None, sens=None, strength=None):
+        with self._lock:
+            if enabled is not None:
+                self.voice_enabled = enabled
+            if device is not None:
+                self.voice_device = device
+            if sens is not None:
+                self.voice_sens = sens
+            if strength is not None:
+                self.voice_strength = strength
+
+    def set_hotkey_triggers(self, cfg):
+        with self._lock:
+            self.hotkey_triggers = dict(cfg)
+
     def set_test(self, e, strength, dur=1.5):
         with self._lock:
             self.test = (e, strength, time.time() + dur)
@@ -262,11 +344,13 @@ class Params:
 
 
 class FaceEQWorker(QObject):
-    """跑在 QThread，移植 main.py 主循环：capture→signals→amplify→Smoother→VTS.inject。
-    每帧从 Params 读滑块值（实时生效）。"""
+    """跑在 QThread，移植 main.py 主循环：capture→engine→Smoother→输出适配器。
+    每帧从 Params 读快照（滑块/塑造/输出目标/语音/触发实时生效）。"""
     status = Signal(str)
     dominant = Signal(str)
     fps = Signal(int)
+    emo_vals = Signal(dict)     # 信号监视器：5 情绪实时值（约 4Hz）
+    hotkeys_sig = Signal(list)  # VTS 当前模型热键 [{name,id}]（情绪触发配置用）
     face_found = Signal(bool)
     error = Signal(str)
     finished = Signal()
@@ -282,75 +366,120 @@ class FaceEQWorker(QObject):
     @Slot()
     def run(self):
         cap = None
-        bridge = None
+        adapter = None
+        voice = None
         try:
+            snap = self._params.snapshot()
             source = self._params.source
+            kind = snap.output_kind
             self.status.emit("等待手机 UDP 数据…" if source == "phone" else "正在打开摄像头…")
             cap = open_source(source)
             is_phone = (source == "phone")
             phone_ok = False
-            self.status.emit("正在连接 VTS…")
-            bridge = VTSBridge()
-            bridge.start()                       # connect + auth + discover + ensure_custom_params
-            _, _, smooth, _, _, _, _, _ = self._params.snapshot()
-            smoother = Smoother(smooth)
-            self.status.emit("运行中（注入 VTS）")
+            self.status.emit("正在连接输出目标…" if kind != "vts" else "正在连接 VTS…")
+            adapter = create_output(kind, snap.output_host, snap.output_port)
+            adapter.start()                      # vts=connect+auth+discover；vmc/osc=无连接
+            if kind == "vts" and hasattr(adapter, "list_hotkeys"):
+                try:
+                    self.hotkeys_sig.emit(adapter.list_hotkeys())
+                except Exception:
+                    pass
+            smoother = Smoother(snap.smooth)
+            self.status.emit(f"运行中（输出：{kind}）")
             last_params = {}
+            last_bs = {}
+            last_emo = {}
+            last_fire = {}                       # 情绪 → 上次触发热键时刻
             frames = 0
             timer = time.time()
+            emo_timer = time.time()
             last_dom = ""
             self._running = True
             while self._running:
                 f = cap.read()
-                gain, eg, smooth, calib, shaping, test, ce_defs, ce_act = self._params.snapshot()
+                s = self._params.snapshot()
+                # —— 语音情绪（实验）：按需开/关采集，失败不影响 EQ 主链路 ——
+                if s.voice_enabled:
+                    if voice is None:
+                        try:
+                            voice = VoiceCapture(device=s.voice_device,
+                                                 sensitivity=s.voice_sens)
+                            self.status.emit("语音情绪已开启（实验）")
+                        except Exception as e:
+                            voice = None
+                            self.status.emit(f"语音开启失败（{e}）；EQ 主链路不受影响")
+                    else:
+                        voice.set_sensitivity(s.voice_sens)
+                elif voice is not None:
+                    voice.close()
+                    voice = None
+                    self.status.emit(f"运行中（输出：{kind}）")
+                vb = voice.read_bias(s.voice_strength) if voice else None
                 te = None
-                if test:                          # 「试表情」到期清理
-                    t_name, t_strength, t_expiry = test
+                if s.test:                        # 「试表情」到期清理
+                    t_name, t_strength, t_expiry = s.test
                     if time.time() < t_expiry:
                         te = (t_name, t_strength)
                     else:
                         self._params.clear_test()
-                params, dom_now, ff = engine.process_frame(
-                    f, gain, eg, calib, shaping=shaping, test_emotion=te,
-                    custom_exprs=ce_defs, custom_act=ce_act)
-                if params:
-                    last_params = params
-                smoother.set_strength(smooth)        # 实时改平滑
+                res = engine.process_frame(
+                    f, s.gain, s.emotion_gains, s.calib, shaping=s.shaping,
+                    test_emotion=te, custom_exprs=s.custom_exprs, custom_act=s.custom_act,
+                    voice_bias=vb)
+                if res.params:
+                    last_params = res.params
+                    last_bs = res.bs_params
+                    last_emo = res.emotions
+                smoother.set_strength(s.smooth)      # 实时改平滑
                 if last_params:
                     try:
-                        bridge.inject(smoother.step(last_params), face_found=ff)
+                        adapter.inject(smoother.step(last_params),
+                                       smoother.step(last_bs), face_found=res.face_found)
                     except Exception:
-                        # VTS 掉线 → 重连（指数退避，3 次）
-                        self.status.emit("VTS 断开，重连中…")
+                        # 目标掉线（仅 VTS 会抛）→ 重连（指数退避，3 次）
+                        self.status.emit("输出目标断开，重连中…")
                         reconnected = False
                         for attempt in range(3):
                             time.sleep(2 ** attempt)  # 1s, 2s, 4s
                             try:
                                 try:
-                                    bridge.close()
+                                    adapter.close()
                                 except Exception:
                                     pass
-                                bridge = VTSBridge()
-                                bridge.start()
+                                adapter = create_output("vts", None, None)
+                                adapter.start()
                                 reconnected = True
-                                self.status.emit("VTS 已重连。")
+                                self.status.emit("输出目标已重连。")
                                 break
                             except Exception:
                                 continue
                         if not reconnected:
-                            raise RuntimeError("VTS 重连失败（重试 3 次后放弃）。")
+                            raise RuntimeError("输出目标重连失败（重试 3 次后放弃）。")
+                # —— 情绪触发 VTS 热键（阈值 + 冷却，decide_triggers 纯函数判定）——
+                now = time.time()
+                if kind == "vts" and s.hotkey_triggers and res.emotions:
+                    for hid, e in decide_triggers(res.emotions, s.hotkey_triggers,
+                                                  last_fire, now):
+                        try:
+                            adapter.trigger_hotkey(hid)
+                            last_fire[e] = now
+                        except Exception:
+                            pass
                 frames += 1
                 now = time.time()
+                if now - emo_timer >= 0.25:      # 信号监视器节流 ~4Hz
+                    emo_timer = now
+                    self.emo_vals.emit(dict(last_emo))
                 if now - timer >= 1.0:
                     self.fps.emit(frames)
-                    if ff and dom_now and dom_now != last_dom:
-                        last_dom = dom_now
-                        self.dominant.emit(dom_now)
+                    if res.face_found and res.dominant and res.dominant != last_dom:
+                        last_dom = res.dominant
+                        self.dominant.emit(res.dominant)
                     if is_phone:   # 手机源状态提示（只在状态翻转时报）
                         stale = cap.is_stale()
                         if not stale and not phone_ok:
                             phone_ok = True
-                            self.status.emit("运行中（注入 VTS，手机源）")
+                            self.status.emit(f"运行中（输出 {kind}，手机源）")
                         elif stale and phone_ok:
                             phone_ok = False
                             self.status.emit("手机数据断流（检查 app 发送与防火墙）")
@@ -364,9 +493,14 @@ class FaceEQWorker(QObject):
                     cap.release()
                 except Exception:
                     pass
-            if bridge:
+            if voice:
                 try:
-                    bridge.close()
+                    voice.close()
+                except Exception:
+                    pass
+            if adapter:
+                try:
+                    adapter.close()
                 except Exception:
                     pass
             self._running = False
@@ -402,16 +536,20 @@ class ShapingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("高级塑造 · 情绪→参数增强 / 耦合")
         self.setMinimumWidth(580)
+        self.resize(600, 640)
         self._params = params
         self._base_couplings = [tuple(c) for c in emotions.DEFAULT_SHAPING.couplings]
-        _, _, _, _, cur, _, _, _ = params.snapshot()
+        cur = params.snapshot().shaping
         # 当前塑造里不在默认集的耦合（如手工 JSON 加的）原样保留，不在本面板编辑
         self._extra_couplings = [tuple(c) for c in cur.couplings
                                  if not any(c[:3] == b[:3] for b in self._base_couplings)]
 
         root = QVBoxLayout(self)
+        self._tabs = QTabWidget()
 
-        # —— boost 矩阵 ——
+        # —— Tab 1: Live2D 参数（VTS 输出）——
+        tab1 = QWidget()
+        t1 = QVBoxLayout(tab1)
         gb = QGroupBox("情绪→参数 附加放大系数（0=不塑造该组合；正=增强；负=反向压）")
         QVBoxLayout(gb)
         params_order = list(emotions.DEFAULT_SHAPING.boosts.keys())
@@ -421,19 +559,14 @@ class ShapingDialog(QDialog):
         self._cells = {}
         for r, p in enumerate(params_order):
             for c, e in enumerate(emotions.EMOTIONS):
-                sp = QDoubleSpinBox()
-                sp.setRange(-2.0, 2.0)
-                sp.setSingleStep(0.05)
-                sp.setDecimals(2)
-                sp.setValue(cur.boosts.get(p, {}).get(e, 0.0))
-                sp.valueChanged.connect(self._apply)
+                sp = self._make_spin(cur.boosts.get(p, {}).get(e, 0.0), self._apply)
                 self._table.setCellWidget(r, c, sp)
                 self._cells[(p, e)] = sp
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         gb.layout().addWidget(self._table)
-        root.addWidget(gb)
+        t1.addWidget(gb)
 
-        # —— 耦合 ——
+        # —— 耦合（Live2D 空间）——
         gc = QGroupBox("跨参数耦合（门情绪开火时把目标参数抬向源；只抬不压）")
         QVBoxLayout(gc)
         self._coup_checks, self._coup_spins = [], []
@@ -458,10 +591,33 @@ class ShapingDialog(QDialog):
             self._coup_spins.append(sp)
         if self._extra_couplings:
             gc.layout().addWidget(QLabel(f"另有 {len(self._extra_couplings)} 条自定义耦合（JSON 配置）原样保留。"))
-        root.addWidget(gc)
+        t1.addWidget(gc)
+        self._tabs.addTab(tab1, "Live2D 参数 (VTS)")
+
+        # —— Tab 2: BlendShape（VMC/OSC → 3D 工具）——
+        tab2 = QWidget()
+        t2 = QVBoxLayout(tab2)
+        gb2 = QGroupBox("情绪→BlendShape 附加放大系数（3D 输出；未列出的形状 1:1 透传）")
+        QVBoxLayout(gb2)
+        bs_order = list(emotions.BS_CONFIG.keys())
+        self._bs_table = QTableWidget(len(bs_order), len(emotions.EMOTIONS))
+        self._bs_table.setHorizontalHeaderLabels(emotions.EMOTIONS)
+        self._bs_table.setVerticalHeaderLabels(bs_order)
+        self._bs_cells = {}
+        for r, k in enumerate(bs_order):
+            for c, e in enumerate(emotions.EMOTIONS):
+                sp = self._make_spin(cur.bs_boosts.get(k, {}).get(e, 0.0), self._apply)
+                self._bs_table.setCellWidget(r, c, sp)
+                self._bs_cells[(k, e)] = sp
+        self._bs_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        gb2.layout().addWidget(self._bs_table)
+        t2.addWidget(gb2)
+        self._tabs.addTab(tab2, "BlendShape (VMC/OSC 3D)")
+
+        root.addWidget(self._tabs)
 
         # —— 试表情 ——
-        gt = QGroupBox("试表情（注入合成情绪值 1.5 秒，在 VTS 里看塑造效果）")
+        gt = QGroupBox("试表情（注入合成情绪值 1.5 秒，在目标软件里看塑造效果）")
         QHBoxLayout(gt)
         for e in emotions.EMOTIONS:
             b = QPushButton(e)
@@ -480,18 +636,32 @@ class ShapingDialog(QDialog):
         h.addWidget(btn_close)
         root.addLayout(h)
 
+    @staticmethod
+    def _make_spin(value, on_change):
+        sp = QDoubleSpinBox()
+        sp.setRange(-2.0, 2.0)
+        sp.setSingleStep(0.05)
+        sp.setDecimals(2)
+        sp.setValue(value)
+        sp.valueChanged.connect(on_change)
+        return sp
+
     # —— 收集/应用 ——
     def _collect(self):
         boosts = {}
         for (p, e), sp in self._cells.items():
             if abs(sp.value()) > 1e-9:
                 boosts.setdefault(p, {})[e] = sp.value()
+        bs_boosts = {}
+        for (k, e), sp in self._bs_cells.items():
+            if abs(sp.value()) > 1e-9:
+                bs_boosts.setdefault(k, {})[e] = sp.value()
         couplings = []
         for i, (tgt, src, gate, _k, mb) in enumerate(self._base_couplings):
             if self._coup_checks[i].isChecked():
                 couplings.append((tgt, src, gate, self._coup_spins[i].value(), mb))
         couplings.extend(self._extra_couplings)
-        return emotions.Shaping(boosts=boosts, couplings=couplings)
+        return emotions.Shaping(boosts=boosts, couplings=couplings, bs_boosts=bs_boosts)
 
     def _apply(self, *_):
         self._params.set_shaping(self._collect())
@@ -501,6 +671,10 @@ class ShapingDialog(QDialog):
         for (p, e), sp in self._cells.items():
             sp.blockSignals(True)
             sp.setValue(d.boosts.get(p, {}).get(e, 0.0))
+            sp.blockSignals(False)
+        for (k, e), sp in self._bs_cells.items():
+            sp.blockSignals(True)
+            sp.setValue(d.bs_boosts.get(k, {}).get(e, 0.0))
             sp.blockSignals(False)
         for i, (_, _, _, k, _) in enumerate(self._base_couplings):
             for w in (self._coup_checks[i], self._coup_spins[i]):
@@ -516,6 +690,10 @@ class ShapingDialog(QDialog):
         for (p, e), sp in self._cells.items():
             sp.blockSignals(True)
             sp.setValue(shaping.boosts.get(p, {}).get(e, 0.0))
+            sp.blockSignals(False)
+        for (k, e), sp in self._bs_cells.items():
+            sp.blockSignals(True)
+            sp.setValue(shaping.bs_boosts.get(k, {}).get(e, 0.0))
             sp.blockSignals(False)
         for i, (tgt, src, gate, k_def, _mb) in enumerate(self._base_couplings):
             cur_k = next((c[3] for c in shaping.couplings
@@ -572,6 +750,110 @@ class CustomExprDialog(QDialog):
         return name, weights
 
 
+class TriggerDialog(QDialog):
+    """情绪 → VTS 热键触发配置：每情绪一行（启用/阈值/冷却/目标热键）。
+
+    在连续 EQ 之上补事件层：大笑越阈值→贴纸，怒越阈值→切换表情。配置存
+    hotkey_triggers.json；热键列表来自 VTS 当前模型（点「开始」后自动发现）。
+    """
+
+    def __init__(self, params, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("情绪触发 · 检测情绪 → VTS 热键")
+        self.setMinimumWidth(560)
+        self._params = params
+        self._hotkeys = []
+        self._rows = {}
+
+        root = QVBoxLayout(self)
+        note = QLabel("检测情绪越过阈值且冷却结束 → 触发一次 VTS 热键（Expression/贴纸/动作）。\n"
+                      "热键列表来自当前模型的 Hotkey 配置——点「开始」连接 VTS 后自动发现。")
+        note.setObjectName("hint")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        grid = QGridLayout()
+        for c, htext in enumerate(["情绪", "启用", "阈值", "冷却(秒)", "目标热键"]):
+            grid.addWidget(QLabel(htext), 0, c)
+        cur = params.snapshot().hotkey_triggers or {}
+        for r, e in enumerate(emotions.EMOTIONS, start=1):
+            cfg = cur.get(e, {})
+            grid.addWidget(QLabel(e), r, 0)
+            en = QCheckBox()
+            en.setChecked(bool(cfg.get("enabled", False)))
+            en.toggled.connect(self._apply)
+            grid.addWidget(en, r, 1)
+            th = QDoubleSpinBox()
+            th.setRange(0.05, 1.0)
+            th.setSingleStep(0.05)
+            th.setValue(float(cfg.get("threshold", 0.8)))
+            th.valueChanged.connect(self._apply)
+            grid.addWidget(th, r, 2)
+            cd = QSpinBox()
+            cd.setRange(1, 600)
+            cd.setValue(int(cfg.get("cooldown", 5)))
+            cd.valueChanged.connect(self._apply)
+            grid.addWidget(cd, r, 3)
+            combo = QComboBox()
+            combo.addItem("（选择热键）", None)
+            combo.currentIndexChanged.connect(self._apply)
+            grid.addWidget(combo, r, 4)
+            if cfg.get("hotkey_id") is not None:
+                combo.addItem(f"id={cfg['hotkey_id']}（开始后显示名称）", cfg["hotkey_id"])
+                combo.setCurrentIndex(1)
+            self._rows[e] = (en, th, cd, combo)
+        root.addLayout(grid)
+
+        h = QHBoxLayout()
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.close)
+        h.addStretch(1)
+        h.addWidget(btn_close)
+        root.addLayout(h)
+
+    def set_hotkeys(self, hotkeys):
+        """worker 发现的热键列表到达后刷新下拉（保留已选 id）。"""
+        self._hotkeys = hotkeys or []
+        for e, (_en, _th, _cd, combo) in self._rows.items():
+            keep = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("（选择热键）", None)
+            for h in self._hotkeys:
+                combo.addItem(f"{h['name']} (id={h['id']})", h["id"])
+            if keep is not None:
+                idx = combo.findData(keep)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
+    def refresh_config(self, cfg):
+        """外部配置（预设等）同步到控件。"""
+        for e, (en, th, cd, combo) in self._rows.items():
+            c = (cfg or {}).get(e, {})
+            en.setChecked(bool(c.get("enabled", False)))
+            th.setValue(float(c.get("threshold", 0.8)))
+            cd.setValue(int(c.get("cooldown", 5)))
+            if c.get("hotkey_id") is not None:
+                idx = combo.findData(c["hotkey_id"])
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            else:
+                combo.setCurrentIndex(0)
+
+    def _collect(self):
+        cfg = {}
+        for e, (en, th, cd, combo) in self._rows.items():
+            cfg[e] = {"enabled": en.isChecked(), "threshold": th.value(),
+                      "cooldown": cd.value(), "hotkey_id": combo.currentData()}
+        return sanitize_trigger_config(cfg, emotions.EMOTIONS)
+
+    def _apply(self, *_):
+        cfg = self._collect()
+        self._params.set_hotkey_triggers(cfg)
+        save_trigger_config(cfg)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -585,6 +867,8 @@ class MainWindow(QMainWindow):
         self.worker = None
         self._calib_thread = None
         self._shape_dlg = None
+        self._trig_dlg = None
+        self._discovered_hotkeys = []
         self._running = False
         self._had_error = False
 
@@ -613,6 +897,73 @@ class MainWindow(QMainWindow):
         cam_row.addWidget(self.cam_combo, 1)
         root.addLayout(cam_row)
 
+        # 输出目标
+        g_out = QGroupBox("输出目标 Output")
+        QVBoxLayout(g_out)
+        out_row1 = QHBoxLayout()
+        out_row1.addWidget(QLabel("目标:"))
+        self.out_combo = QComboBox()
+        for k, label in OUTPUT_KINDS:
+            self.out_combo.addItem(label, k)
+        out_row1.addWidget(self.out_combo, 1)
+        g_out.layout().addLayout(out_row1)
+        out_row2 = QHBoxLayout()
+        out_row2.addWidget(QLabel("地址:"))
+        self.out_host = QLineEdit(self.params.output_host)
+        self.out_host.setMinimumWidth(110)
+        self.out_port = QSpinBox()
+        self.out_port.setRange(1, 65535)
+        self.out_port.setValue(self.params.output_port)
+        out_row2.addWidget(self.out_host, 1)
+        out_row2.addWidget(QLabel("端口:"))
+        out_row2.addWidget(self.out_port)
+        g_out.layout().addLayout(out_row2)
+        self.out_hint = QLabel("")
+        self.out_hint.setObjectName("hint")
+        self.out_hint.setWordWrap(True)
+        g_out.layout().addWidget(self.out_hint)
+        root.addWidget(g_out)
+
+        # 语音情绪（实验）
+        g_voice = QGroupBox("语音情绪（实验）——说话的音量/亮度给表情加偏置")
+        QVBoxLayout(g_voice)
+        v_row1 = QHBoxLayout()
+        self.voice_check = QCheckBox("启用（需麦克风）")
+        self.voice_check.setChecked(self.params.voice_enabled)
+        self.voice_check.toggled.connect(
+            lambda on: self.params.set_voice(enabled=on))
+        v_row1.addWidget(self.voice_check)
+        v_row1.addStretch(1)
+        g_voice.layout().addLayout(v_row1)
+        v_row2 = QHBoxLayout()
+        v_row2.addWidget(QLabel("麦克风:"))
+        self.voice_dev_combo = QComboBox()
+        self._voice_devices = list_input_devices()
+        if self._voice_devices:
+            for i, name in self._voice_devices:
+                self.voice_dev_combo.addItem(name[:40], i)
+        else:
+            self.voice_dev_combo.addItem("（未找到输入设备/未装 sounddevice）", None)
+        self.voice_dev_combo.currentIndexChanged.connect(
+            lambda idx: self.params.set_voice(device=self.voice_dev_combo.itemData(idx)))
+        v_row2.addWidget(self.voice_dev_combo, 1)
+        g_voice.layout().addLayout(v_row2)
+        self.voice_sens = FloatSlider("灵敏度", 0.2, 3.0, 0.05,
+                                      self.params.voice_sens)
+        self.voice_sens.valueChanged.connect(lambda v: self.params.set_voice(sens=v))
+        g_voice.layout().addWidget(self.voice_sens)
+        self.voice_strength = FloatSlider("影响强度", 0.0, 1.0, 0.01,
+                                          self.params.voice_strength)
+        self.voice_strength.valueChanged.connect(
+            lambda v: self.params.set_voice(strength=v))
+        g_voice.layout().addWidget(self.voice_strength)
+        self.voice_hint = QLabel("大声说话→表情更夸张；明亮音色偏 happy，低沉偏 angry。"
+                                 "安静时零偏置。默认关闭。")
+        self.voice_hint.setObjectName("hint")
+        self.voice_hint.setWordWrap(True)
+        g_voice.layout().addWidget(self.voice_hint)
+        root.addWidget(g_voice)
+
         # 增益
         g_gain = QGroupBox("增益 Gain")
         QVBoxLayout(g_gain)
@@ -637,6 +988,22 @@ class MainWindow(QMainWindow):
         g_sm.layout().addWidget(self.smooth_slider)
         root.addWidget(g_sm)
 
+        # 信号监视
+        g_sig = QGroupBox("信号监视（实时情绪强度）")
+        grid = QGridLayout(g_sig)
+        self._emo_bars = {}
+        for i, e in enumerate(emotions.EMOTIONS):
+            lbl = QLabel(e)
+            lbl.setMinimumWidth(70)
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setFormat("%p%")
+            bar.setFixedHeight(16)
+            grid.addWidget(lbl, i, 0)
+            grid.addWidget(bar, i, 1)
+            self._emo_bars[e] = bar
+        root.addWidget(g_sig)
+
         # 按钮
         btns = QHBoxLayout()
         self.start_btn = QPushButton("▶  开始")
@@ -645,10 +1012,12 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.calib_btn = QPushButton("●  校准")
         self.shape_btn = QPushButton("🎛 高级塑造")
+        self.trig_btn = QPushButton("⌨ 情绪触发")
         btns.addWidget(self.start_btn)
         btns.addWidget(self.stop_btn)
         btns.addWidget(self.calib_btn)
         btns.addWidget(self.shape_btn)
+        btns.addWidget(self.trig_btn)
         root.addLayout(btns)
 
         # 预设
@@ -705,6 +1074,10 @@ class MainWindow(QMainWindow):
         self.params.set_custom_exprs(load_custom_exprs())
         self._rebuild_ce_rows()
 
+        # 情绪触发配置：启动时载入
+        self.params.set_hotkey_triggers(
+            load_trigger_config(valid_emotions=emotions.EMOTIONS))
+
         # 滑块 → Params（实时）
         self.gain_slider.valueChanged.connect(lambda v: self.params.set_gain(v))
         for e, fs in self.emo_sliders.items():
@@ -715,17 +1088,51 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(self._on_stop)
         self.calib_btn.clicked.connect(self._on_calibrate)
         self.shape_btn.clicked.connect(self._open_shaping)
+        self.trig_btn.clicked.connect(self._open_triggers)
+        self.out_combo.currentIndexChanged.connect(self._on_output_kind)
+        self.out_host.editingFinished.connect(self._push_output)
+        self.out_port.valueChanged.connect(self._push_output)
+        self._on_output_kind(0)   # 初始化提示文案/端口默认值
 
-        # 滚动包装（放在内容构建完之后）：窗口不够高时滚动，不压扁组件
+        # 滚动包装（所有内容构建完之后）：窗口不够高时滚动，不压扁组件
         scroll = QScrollArea()
         scroll.setWidget(central)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setCentralWidget(scroll)
 
+    # —— 输出目标 ——
+    def _on_output_kind(self, idx):
+        kind = self.out_combo.itemData(idx)
+        if kind != "vts":
+            self.out_port.setValue(OUTPUT_DEFAULT_PORT[kind])
+        for w in (self.out_host, self.out_port):
+            w.setEnabled(kind != "vts")
+        self.out_hint.setText({
+            "vts": "VTS：需在 VTS 设置勾选 Allow Plugin API access；首次连接会弹授权窗；"
+                   "并关掉 VTS 自带摄像头跟踪",
+            "vmc": "VMC：在目标软件（Warudo/VNyans/VSeeFace…）里开启 VMC 接收，端口对齐"
+                   "（默认 39540）；FaceEQ 发送放大后的 ARKit blendshape",
+            "osc": "OSC：自定义目标监听该端口（如 VRChat FT 桥 9000）；可在 osc_mapping.json "
+                   "里做参数名精确映射",
+        }[kind])
+        self._push_output()
+
+    def _push_output(self):
+        self.params.set_output(self.out_combo.currentData(),
+                               self.out_host.text().strip() or "127.0.0.1",
+                               self.out_port.value())
+
+    # —— 信号监视 ——
+    @Slot(dict)
+    def _on_emo_vals(self, vals):
+        for e, bar in self._emo_bars.items():
+            v = vals.get(e, 0.0)
+            bar.setValue(int(round(max(0.0, min(1.0, v)) * 100)))
+
     # —— 高级塑造 ——
     def _current_shaping(self):
-        return self.params.snapshot()[4]
+        return self.params.snapshot().shaping
 
     def _open_shaping(self):
         """非模态打开塑造编辑器；重复点击 = 提到前台并同步当前值。"""
@@ -736,6 +1143,25 @@ class MainWindow(QMainWindow):
         self._shape_dlg.raise_()
         self._shape_dlg.activateWindow()
 
+    # —— 情绪触发 ——
+    def _open_triggers(self):
+        if self._trig_dlg is None:
+            self._trig_dlg = TriggerDialog(self.params, self)
+        self._trig_dlg.set_hotkeys(self._discovered_hotkeys)
+        self._trig_dlg.refresh_config(self.params.snapshot().hotkey_triggers)
+        self._trig_dlg.show()
+        self._trig_dlg.raise_()
+        self._trig_dlg.activateWindow()
+
+    def _on_hotkeys(self, hotkeys):
+        """worker 连上 VTS 后发现的热键列表 → 触发对话框下拉可用。"""
+        self._discovered_hotkeys = hotkeys or []
+        if self._trig_dlg is not None:
+            self._trig_dlg.set_hotkeys(self._discovered_hotkeys)
+        if self._discovered_hotkeys:
+            self.statusBar().showMessage(
+                f"发现 {len(self._discovered_hotkeys)} 个 VTS 热键——「⌨ 情绪触发」可配置。")
+
     # —— 自定义复合表情 ——
     def _rebuild_ce_rows(self):
         """按当前定义重建自定义表情行（滑块 0..1 + 编辑/删除）。"""
@@ -744,7 +1170,8 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self._ce_rows = {}
-        defs, act = self.params.snapshot()[6], self.params.snapshot()[7]
+        s = self.params.snapshot()
+        defs, act = s.custom_exprs, s.custom_act
         for name in sorted(defs):
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
@@ -777,7 +1204,7 @@ class MainWindow(QMainWindow):
         if not name:
             self.statusBar().showMessage("自定义表情需要名字和至少一个非零权重。")
             return
-        defs = self.params.snapshot()[6]
+        defs = self.params.snapshot().custom_exprs
         if name in defs:
             QMessageBox.information(self, "已存在", f"「{name}」已存在，请直接编辑它。")
             return
@@ -786,7 +1213,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"自定义表情「{name}」已创建。")
 
     def _ce_edit(self, name):
-        defs = self.params.snapshot()[6]
+        defs = self.params.snapshot().custom_exprs
         dlg = CustomExprDialog(self, name=name, weights=defs.get(name, {}))
         if dlg.exec() != QDialog.Accepted:
             return
@@ -802,7 +1229,7 @@ class MainWindow(QMainWindow):
     def _ce_delete(self, name):
         if QMessageBox.question(self, "删自定义表情", f"删除「{name}」？") != QMessageBox.StandardButton.Yes:
             return
-        defs = self.params.snapshot()[6]
+        defs = self.params.snapshot().custom_exprs
         defs.pop(name, None)
         self._apply_ce_defs(defs)
         self.statusBar().showMessage(f"自定义表情「{name}」已删除。")
@@ -828,13 +1255,18 @@ class MainWindow(QMainWindow):
             return
         dlg = QMessageBox(self)
         dlg.setWindowTitle("启动前确认")
+        out_note = {
+            "vts": "请先在 VTube Studio 把【摄像头跟踪关掉】(Camera → None/Off)，让 FaceEQ 接管参数注入。",
+            "vmc": "请在目标 3D 软件（Warudo/VNyans/VSeeFace 等）里开启 VMC 接收，端口与这里一致。",
+            "osc": "请确认 OSC 目标正在监听对应端口（VRChat FT 桥默认 9000）。",
+        }[self.params.output_kind]
         if self.params.source == "phone":
             dlg.setText("手机面捕模式：手机 app（iFacialMocap / MeowFace）里填\n\n"
                         f"IP：{_best_local_ip()}\n端口：{PHONE_PORT}\n\n"
                         "手机与电脑同一 WiFi 后开始发送；首次可能弹 Windows 防火墙提示，请放行。\n"
-                        "VTS 摄像头跟踪保持关闭（FaceEQ 注入会覆盖它）。\n\n准备好后点「开始」。")
+                        + out_note + "\n\n准备好后点「开始」。")
         else:
-            dlg.setText("请先在 VTube Studio 把【摄像头跟踪关掉】(Camera → None/Off)，让 FaceEQ 独占摄像头。\n\n关好后点「开始」。")
+            dlg.setText(out_note + "\n\n准备好后点「开始」。")
         dlg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         dlg.setDefaultButton(QMessageBox.Ok)
         if dlg.exec() != QMessageBox.Ok:
@@ -855,6 +1287,8 @@ class MainWindow(QMainWindow):
         self.worker.status.connect(self.statusBar().showMessage)
         self.worker.dominant.connect(lambda d: self._dom_lbl.setText(f"[{d}]"))
         self.worker.fps.connect(lambda n: self._fps_lbl.setText(f"FPS: {n}"))
+        self.worker.emo_vals.connect(self._on_emo_vals)
+        self.worker.hotkeys_sig.connect(self._on_hotkeys)
         self.worker.error.connect(self._on_error)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self._on_finished)
@@ -970,7 +1404,7 @@ class MainWindow(QMainWindow):
                     {e: fs.value() for e, fs in self.emo_sliders.items()},
                     self.smooth_slider.value(),
                     self._current_shaping(),
-                    self.params.snapshot()[6])
+                    self.params.snapshot().custom_exprs)
         self._refresh_presets()
         self.preset_combo.setCurrentText(name)
         self.statusBar().showMessage(f"预设「{name}」已保存（含塑造与自定义表情）。")

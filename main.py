@@ -6,15 +6,18 @@ emotions.amplify(全局gain + 按情绪差异化) → 平滑 → 渲染/注入�
 
 两种出画面方式（可共存）：
   - 本地预览（默认）：glfw 窗口里画 Haru。--no-preview 关掉。
-  - 注入 VTube Studio：--vts，把放大+平滑后的参数经 WebSocket 喂给 VTS，
-    由 VTS 渲染主播自己的模型（路径 A）。需 pip install websocket-client。
+  - 注入目标：--output vts|vmc|osc，把放大+平滑后的参数喂给目标软件：
+      vts = VTube Studio（Live2D 参数注入，路径 A）
+      vmc = VMC 协议（OSC/UDP）→ Warudo/VNyans/VSeeFace 等 3D 工具（ARKit blendshape）
+      osc = 通用 OSC（VRChat FT 等自定义目标）
+    需 pip install websocket-client（vts）/ python-osc（vmc/osc）。
 
 用法:
     PYTHONUTF8=1 .venv/Scripts/python.exe main.py                      # 仅本地预览
-    PYTHONUTF8=1 .venv/Scripts/python.exe main.py --vts                # 预览 + 注入 VTS
-    PYTHONUTF8=1 .venv/Scripts/python.exe main.py --vts --no-preview   # 纯 VTS
+    PYTHONUTF8=1 .venv/Scripts/python.exe main.py --output vts         # 预览 + 注入 VTS
+    PYTHONUTF8=1 .venv/Scripts/python.exe main.py --output vmc --no-preview
     PYTHONUTF8=1 .venv/Scripts/python.exe main.py --gain 1.8 --happy 1.0 --angry -0.5
-ESC/关窗（有预览时）或 Ctrl-C（纯 VTS 时）退出。
+ESC/关窗（有预览时）或 Ctrl-C（纯注入时）退出。
 """
 import argparse
 import os
@@ -57,7 +60,13 @@ def main():
     ap.add_argument("--seconds", type=float, default=0,
                     help=">0 时运行指定秒数后自动退出（自动化测试用）")
     ap.add_argument("--vts", action="store_true",
-                    help="把放大+平滑后的参数注入 VTube Studio (ws://localhost:8001)")
+                    help="[兼容旧参数] 等价 --output vts")
+    ap.add_argument("--output", choices=["vts", "vmc", "osc"], default=None,
+                    help="输出目标：vts=VTube Studio(Live2D 注入)；vmc=VMC 协议(Warudo/VNyans 等 3D 工具，"
+                         "发 ARKit blendshape)；osc=通用 OSC。不传=仅本地预览")
+    ap.add_argument("--osc-host", default="127.0.0.1", help="vmc/osc 输出的目标 IP")
+    ap.add_argument("--osc-port", type=int, default=None,
+                    help="vmc/osc 输出的目标端口（vmc 默认 39540，osc 默认 9000）")
     ap.add_argument("--no-preview", action="store_true",
                     help="不开本地 Live2D 预览窗口（纯 VTS 模式）")
     ap.add_argument("--profile", default=None,
@@ -119,20 +128,21 @@ def main():
                              title=f"FaceEQ gain={cfg.global_gain} (ESC 退出)",
                              smooth=cfg.smooth)
 
-    bridge = None
-    bridge_smoother = None
-    if args.vts:
-        # 懒加载：没有 websocket-client 时，纯预览路径完全不受影响
+    adapter = None
+    out_smoother = None
+    output_kind = "vts" if args.vts else args.output
+    if output_kind:
+        # 懒加载：没有 websocket-client/python-osc 时，纯预览路径完全不受影响
+        from faceeq.output import create_output
         from faceeq.smooth import Smoother
-        from faceeq.vts_bridge import VTSBridge
-        bridge = VTSBridge()
-        bridge.start()                       # 连接 + 鉴权 + discover
-        bridge_smoother = Smoother(cfg.smooth)
+        adapter = create_output(output_kind, args.osc_host, args.osc_port)
+        adapter.start()
+        out_smoother = Smoother(cfg.smooth)
 
     if ren:
         print(f"模型参数集: {len(ren.param_ids) if ren.param_ids else '?'} 个")
-    if bridge:
-        print("[vts] 已接管 VTS 参数注入（set 模式，覆盖 VTS 自带跟踪）")
+    if adapter:
+        print(f"[output] 输出目标 {output_kind} 已接管（覆盖目标软件自带跟踪）")
     print(f"全局 gain={cfg.global_gain}，平滑 smooth={cfg.smooth}，情绪倍数={eg}")
     print("对着摄像头做表情（笑/怒/惊讶/悲伤…）。ESC/Ctrl-C 退出。\n")
 
@@ -140,7 +150,8 @@ def main():
     timer = time.time()
     t_start = time.time()
     last_params = {}
-    vts_down = False
+    last_bs = {}
+    out_down = False
     dom = "neutral"
 
     try:
@@ -150,24 +161,26 @@ def main():
             if ren and ren.should_close():
                 break
             f = cap.read()
-            params, new_dom, face_found = engine.process_frame(
+            params, new_dom, face_found, bs_out = engine.process_frame(
                 f, cfg.global_gain, eg, cfg.calib, shaping=cfg.shaping)
             if params:                       # 检测到脸 → 更新；否则保持上一帧
                 last_params = params
+                last_bs = bs_out
                 dom = new_dom
 
             if ren:
                 ren.set_params(last_params)  # 预览：renderer 内部自带 EMA
                 ren.frame()
-            if bridge and last_params:
-                # 注入前过和预览一致的 EMA（对口型减半）：VTS 里嘴不延迟、表情不抖
+            if adapter and last_params:
+                # 注入前过和预览一致的 EMA（对口型减半）：目标软件里嘴不延迟、表情不抖
                 try:
-                    bridge.inject(bridge_smoother.step(last_params), face_found=face_found)
-                    vts_down = False
+                    adapter.inject(out_smoother.step(last_params),
+                                   out_smoother.step(last_bs), face_found=face_found)
+                    out_down = False
                 except ConnectionError as e:
-                    if not vts_down:      # 只在掉线瞬间提示一次，避免每帧刷屏
-                        print(f"[vts] 注入失败（VTS 掉线？）: {e}")
-                        vts_down = True
+                    if not out_down:      # 只在掉线瞬间提示一次，避免每帧刷屏
+                        print(f"[{output_kind}] 注入失败（目标掉线？）: {e}")
+                        out_down = True
 
             fps += 1
             if time.time() - timer >= 1.0:
@@ -181,8 +194,8 @@ def main():
     finally:
         if ren:
             ren.shutdown()                   # 关窗口 + 释放 GL
-        if bridge:
-            bridge.close()
+        if adapter:
+            adapter.close()
         cap.release()                        # 摄像头/landmarker 释放（内部已超时兜底）
         # Windows 上 cv2/mediapipe 释放偶发卡死，被看门狗放弃的守护线程会拖住进程退出。
         # os._exit 绕过残留清理，确保进程立即结束（句柄由 OS 回收）。

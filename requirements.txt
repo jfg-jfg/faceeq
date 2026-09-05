@@ -5,5 +5,7 @@ glfw>=2.7                 # OpenGL 窗口/上下文
 PyOpenGL>=3.1.7
 numpy>=1.24
 websocket-client>=1.6.0   # VTS WebSocket 注入
+python-osc>=1.8.0         # VMC/OSC 输出（Warudo/VNyans 等 3D 工具）
 Pillow>=10.0.0            # 校正向导 PIL 中英文文字渲染
 PySide6>=6.6.0            # GUI 控制面板（VTS 风格）
+sounddevice>=0.4.6        # 语音情绪引擎（实验；麦克风采集，wheel 自带 PortAudio）

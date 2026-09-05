@@ -232,6 +232,23 @@ class VTSBridge:
             print(f"[vts]   默认映射 VTS 不认: {miss}")
         return names
 
+    def list_hotkeys(self):
+        """当前模型的热键列表 [{name, id}]（情绪触发用）。失败 → []。"""
+        r = self._send("HotkeysInCurrentModelRequest")
+        if not r:
+            return []
+        out = []
+        for h in r.get("data", {}).get("hotkeys") or []:
+            out.append({"name": str(h.get("name", "")), "id": h.get("hotkeyID")})
+        return out
+
+    def trigger_hotkey(self, hotkey_id):
+        """触发热键（fire-and-forget send，不等响应）。连接失败 raise ConnectionError。"""
+        payload = {"apiName": _API, "apiVersion": _VER, "requestID": self._next_id(),
+                   "messageType": "HotkeyTriggerRequest",
+                   "data": {"hotkeyID": int(hotkey_id)}}
+        self._ws.send(json.dumps(payload))
+
     def discover_model_params(self):
         """Live2DParameterListRequest → 当前模型的 Live2D 参数名集合。"""
         r = self._send("Live2DParameterListRequest")

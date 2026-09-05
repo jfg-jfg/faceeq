@@ -8,10 +8,14 @@
 **核心：FaceEQ = 你表情的情绪 EQ**
 - 全局放大（拖滑块）让表情更夸张；
 - per-emotion 增强/抑制（拖到 +1 放大、拖到 -1 压成扑克脸 = persona）；
-- 跨参数耦合（笑时眼笑追嘴笑 = Duchenne 真笑；VTS 静态滑块结构上做不到）。
+- 跨参数耦合（笑时眼笑追嘴笑 = Duchenne 真笑；VTS 静态滑块结构上做不到）；
+- 自定义复合表情（「害羞」= happy 0.3 + surprised 0.4，滑块实时激活）；
+- 语音情绪（实验）：说话的音量/音色给表情加偏置——挡脸/低头时表情依然生动；
+- 情绪触发热键（VTS）：大笑越阈值→自动贴纸/切表情。
 
-**宿主 = VTube Studio**：FaceEQ 把放大后的参数经 VTS 公开 WebSocket API 注入，由 VTS
-渲染**你自己的模型**（FaceEQ 模型无关）。FaceEQ 是独立 GUI 控制面板（深色蓝高亮，VTS 风格）。
+**跨引擎输出**：Live2D 走 **VTube Studio** 注入（WebSocket）；**3D 工具走 VMC 协议**
+（Warudo、VNyan、VSeeFace、VRM 系——发放大后的 ARKit blendshape）；还有通用 OSC 自定义
+映射。见 [docs/outputs.md](docs/outputs.md)。FaceEQ 是独立 GUI 控制面板（深色蓝高亮，VTS 风格）。
 
 ## 上手
 
@@ -49,6 +53,7 @@ PYTHONUTF8=1 .venv\Scripts\python.exe main.py --vts --no-preview --happy 1.0 --a
 ```
 
 ## 文档
+- [输出目标（VTS/VMC/OSC）](docs/outputs.md) —— 对接 Warudo/VNyans/VRChat 等其他软件
 - [校准与 profile](docs/calibration.md) —— per-face 增益向导、profile 格式
 - [VTube Studio 接入](docs/vts-setup.md) —— 连接授权、参数映射、平滑/倍率红线
 

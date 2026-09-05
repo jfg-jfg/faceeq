@@ -6,10 +6,10 @@ FaceEQ = VTuber 表情 EQ 过滤器：实时面捕 → 按情绪差异化放大/
 
 ```
 捕捉源（open_source 工厂）：webcam Capture(mediapipe) | 手机 PhoneCapture(iFacialMocap/MeowFace UDP)
-  → engine.process_frame
+  → engine.process_frame（同时产出 Live2D 参数空间 + ARKit blendshape 空间）
   → mapping.base_map(特征→Live2D参数；头部姿态/眼球优先手机直传，无则特征点几何)
-  → emotions.signals(检测情绪) → emotions.amplify(gain+boost+coupling)
-  → Smoother(EMA消抖) → VTSBridge.inject(WebSocket set模式) → VTS → 模型
+  → emotions.signals(检测情绪) → emotions.amplify / bs_amplify(gain+boost+coupling)
+  → Smoother(EMA消抖) → 输出层 output.py（VTS 注入 | VMC blendshape | 自定义 OSC）
 ```
 
 GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.py) 单线程跑同逻辑（经 engine.process_frame 共用）。
@@ -20,7 +20,10 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 |---|---|
 | `faceeq/capture.py` | 捕捉源：open_source 工厂；Capture(mediapipe blendshape+478点) | PhoneCapture(iFacialMocap/MeowFace UDP：52 bs+头旋转+眼球，断流超时→空帧) |
 | `faceeq/mapping.py` | base_map：52 blendshape + 478 landmarks → 13 Live2D 参数；RANGES 量程 |
-| `faceeq/emotions.py` | signals：blendshape → 5 情绪强度（EMFACS 规则）；amplify：per-emotion boost + 耦合；Shaping：用户可调塑造配置（默认=硬编码基线，序列化进预设/profile）；apply_custom：自定义复合表情加权注入 |
+| `faceeq/emotions.py` | signals：blendshape → 5 情绪强度（EMFACS 规则）；amplify：per-emotion boost + 耦合（Live2D 空间）；bs_amplify：同构放大（ARKit blendshape 空间，VMC/OSC 输出）；Shaping：用户可调塑造配置（默认=硬编码基线，序列化进预设/profile）；apply_custom：自定义复合表情加权注入 |
+| `faceeq/output.py` | 输出适配层：OutputAdapter 接口 + VTSOutput(包装 VTSBridge) / VmcOutput(OSC bundle 发 /VMC/ext/blend/val ARKit 字符串名，默认 39540) / OscRawOutput(prefix 或 osc_mapping.json 映射，默认 9000)；create_output 工厂 |
+| `faceeq/voice.py` | 语音情绪引擎（实验）：sounddevice 麦克风 → 能量/频谱质心 → 规则偏置（快攻慢放 EMA）；纯函数可测，VAD 门限安静时零偏置 |
+| `faceeq/hotkeys.py` | 情绪→VTS 热键触发：配置消毒/持久化 + decide_triggers 纯函数（阈值+冷却） |
 | `faceeq/profile.py` | 校准 profile（JSON）：au_gains/neutral/dead/emotion_scale；load/resolve/write |
 | `faceeq/smooth.py` | Smoother：per-param EMA（对口型减半）；set_strength 实时改 |
 | `faceeq/vts_bridge.py` | VTSBridge：WebSocket 连接/鉴权/发现/自建参数(capability-aware)/注入/重连 |
@@ -65,6 +68,8 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 - **预设系统**：`presets/<name>.json` 存 EQ 快照（gain+emotions+smooth；v2 另含 shaping 塑造配置，旧预设兼容）；GUI 下拉加载 + 存/删（覆盖/新建选项）；名字消毒。
 - **高级塑造（ShapingDialog，非模态）**：参数×情绪 boost 矩阵 + 耦合开关/强度 + 一键恢复默认 + 试表情按钮（engine 参考底 pose + 合成情绪 1.5s，不照镜子预览）；改动即时写 Params。
 - **自定义复合表情**：`custom_expressions.json`（随仓库预置示例）存定义 {名字: {基础情绪: 权重}}，GUI 每定义一行滑块（激活度 0..1）+ 新建/编辑/删除；激活时 additive 注入情绪向量（persona 负增益语义沿用），注入强度盖过检测时状态栏显示自定义名；定义随预设 v2 携带。
+- **语音情绪（实验）**：GUI 组（开关/麦克风设备/灵敏度/影响强度），worker 内 VoiceCapture 按需启停；偏置走 engine voice_bias additive 通道。
+- **情绪触发**：⌨ 对话框 per-emotion（启用/阈值/冷却/热键下拉，热键列表 worker 连 VTS 后自动发现）；配置 hotkey_triggers.json；worker 逐帧 decide_triggers → adapter.trigger_hotkey（仅 VTS 输出）。
 - **CalibrateRunner(QObject)**：QThread subprocess，不阻塞 GUI；透传退出码分档提示（完成/崩溃/未生成 profile）。
 - 情绪滑块 init 0（0=不塑造），精度 0.01。
 

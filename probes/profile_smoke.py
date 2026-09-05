@@ -150,9 +150,9 @@ ck(f"(g) 自定义: 关耦合后眼笑保持基值 (={out_cus['ParamEyeLSmile']:
    abs(out_cus["ParamEyeLSmile"] - 0.3) < 1e-9)
 sh_from_none = emotions.shaping_from_dict(None)
 ck("(g) shaping_from_dict(None/空)=None→引擎用默认", sh_from_none is None)
-tp, t_dom, t_ff = engine.process_frame(Frame(), 1.4, _Z, None, None, ("happy", 0.8))
-ck(f"(g) 试表情: dom={t_dom} 有参数={len(tp)>0} face_found={t_ff}",
-   t_dom == "happy" and len(tp) > 0 and t_ff)
+tp = engine.process_frame(Frame(), 1.4, _Z, None, None, ("happy", 0.8))
+ck(f"(g) 试表情: dom={tp.dominant} 有参数={len(tp.params)>0} face_found={tp.face_found}",
+   tp.dominant == "happy" and len(tp.params) > 0 and tp.face_found)
 
 # (h) 自定义复合表情（Phase 2b）：加权注入 additive+clamp、负权重压情绪、主导判定、端到端
 emo0 = {"happy": 0.2, "angry": 0.0, "sad": 0.0, "surprised": 0.0, "disgust": 0.0}
@@ -170,10 +170,10 @@ ck(f"(h) clamp01: happy {emo3['happy']:.2f}<=1.0", 0.0 <= emo3["happy"] <= 1.0)
 emo4, _ = emotions.apply_custom(emo0, {"冷": {"happy": -0.5}}, {"冷": 1.0})
 ck(f"(h) 负权重压情绪: happy {emo4['happy']:.2f}==0 (不越到负)", emo4["happy"] == 0.0)
 f_ce = Frame(bs={"jawOpen": 0.1})
-p_ce, d_ce, ff_ce = engine.process_frame(f_ce, 1.4, _Z, None, None, None,
-                                         EXPRS, {"害羞": 1.0})
-ck(f"(h) 端到端: dom={d_ce} 参数={len(p_ce)>0} face={ff_ce}",
-   d_ce == "害羞" and len(p_ce) > 0 and ff_ce)
+r_ce = engine.process_frame(f_ce, 1.4, _Z, None, None, None, EXPRS, {"害羞": 1.0})
+ck(f"(h) 端到端: dom={r_ce.dominant} 参数={len(r_ce.params)>0} face={r_ce.face_found}",
+   r_ce.dominant == "害羞" and len(r_ce.params) > 0 and r_ce.face_found)
+ck("(h) 端到端 bs_params 同步产出（VMC/OSC 输出空间）", len(r_ce.bs_params) > 0)
 
 # (d) load_profile
 ck("(d) load_profile(None)=None", profile.load_profile(None) is None)

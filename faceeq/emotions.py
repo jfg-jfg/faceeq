@@ -249,6 +249,62 @@ def dominant(emo: dict, threshold: float = 0.15) -> str:
     return name if val >= threshold else "neutral"
 
 
+# ---- blendshape 空间的塑形表（Phase 3 多输出：VMC/OSC → 3D 工具）----
+# {ARKit blendshape 名: (是否吃全局 gain, {情绪: boost})}。未列出的键 = (False, {})
+# （结构性形状 1:1 透传：眨眼/视线/舌头/下巴左右等——放大眨眼只会夸张瞎闪）。
+# jawOpen 吃全局但不吃情绪 boost：它同时是说话通道（与 Live2D 空间的对口型快车道一致）。
+_G = True
+BS_CONFIG = {
+    # 嘴部表情
+    "mouthSmileLeft":  (_G, {"happy": 0.5}), "mouthSmileRight":  (_G, {"happy": 0.5}),
+    "mouthFrownLeft":  (_G, {"sad": 0.5}),   "mouthFrownRight":  (_G, {"sad": 0.5}),
+    "mouthPressLeft":  (_G, {"angry": 0.35}), "mouthPressRight": (_G, {"angry": 0.35}),
+    "mouthUpperUpLeft": (_G, {"disgust": 0.35}), "mouthUpperUpRight": (_G, {"disgust": 0.35}),
+    "mouthDimpleLeft": (_G, {"happy": 0.3}), "mouthDimpleRight": (_G, {"happy": 0.3}),
+    "mouthStretchLeft": (_G, {}), "mouthStretchRight": (_G, {}),
+    "mouthFunnel": (_G, {}), "mouthPucker": (_G, {}),
+    "mouthRollLower": (_G, {}), "mouthRollUpper": (_G, {}),
+    "mouthShrugLower": (_G, {}), "mouthShrugUpper": (_G, {}),
+    "mouthLowerDownLeft": (_G, {}), "mouthLowerDownRight": (_G, {}),
+    "jawOpen": (_G, {}),
+    # 眉/眼表情
+    "browDownLeft":  (_G, {"angry": 0.5}), "browDownRight":  (_G, {"angry": 0.5}),
+    "browInnerUp":   (_G, {"sad": 0.4}),
+    "browOuterUpLeft": (_G, {"surprised": 0.35}), "browOuterUpRight": (_G, {"surprised": 0.35}),
+    "eyeWideLeft":   (_G, {"surprised": 0.5}), "eyeWideRight":   (_G, {"surprised": 0.5}),
+    "eyeSquintLeft": (_G, {"happy": 0.35}), "eyeSquintRight": (_G, {"happy": 0.35}),
+    "cheekSquintLeft": (_G, {"happy": 0.35}), "cheekSquintRight": (_G, {"happy": 0.35}),
+    "noseSneerLeft": (_G, {"disgust": 0.5}), "noseSneerRight": (_G, {"disgust": 0.5}),
+    "jawForward":    (_G, {"angry": 0.2}),
+}
+# 未列出的 1:1 透传：eyeBlinkLeft/Right、eyeLook*（8）、jawLeft/Right、
+# mouthLeft/Right、cheekPuff、tongue*。
+
+
+def _bs_default_boosts():
+    return {k: dict(b) for k, (_, b) in BS_CONFIG.items()}
+
+
+# 「试表情」的 blendshape 空间参考底（VMC/OSC 输出预览用，与 REFERENCE_POSE 同思路）
+REFERENCE_BS = {
+    "mouthSmileLeft": 0.2, "mouthSmileRight": 0.2,
+    "mouthFrownLeft": 0.1, "mouthFrownRight": 0.1,
+    "browDownLeft": 0.15, "browDownRight": 0.15,
+    "browInnerUp": 0.15, "browOuterUpLeft": 0.15, "browOuterUpRight": 0.15,
+    "eyeWideLeft": 0.15, "eyeWideRight": 0.15,
+    "eyeSquintLeft": 0.2, "eyeSquintRight": 0.2,
+    "noseSneerLeft": 0.05, "noseSneerRight": 0.05,
+    "jawOpen": 0.1,
+    "cheekSquintLeft": 0.1, "cheekSquintRight": 0.1,
+    "mouthPressLeft": 0.1, "mouthPressRight": 0.1,
+    "mouthUpperUpLeft": 0.05, "mouthUpperUpRight": 0.05,
+}
+
+
+def reference_bs() -> dict:
+    return dict(REFERENCE_BS)
+
+
 # ---- 用户可调塑造配置（Phase 2a）----
 # 默认值 = 上面 PARAM_CONFIG/COUPLING 硬编码基线（no-regression：profile_smoke 钉死
 # 「默认配置输出 == 硬编码基线」）。boosts={参数: {情绪: 附加放大系数}}；
@@ -258,10 +314,12 @@ def dominant(emo: dict, threshold: float = 0.15) -> str:
 class Shaping:
     boosts: dict = field(default_factory=lambda: {p: dict(b) for p, (_, b) in PARAM_CONFIG.items()})
     couplings: list = field(default_factory=lambda: [tuple(c) for c in COUPLING])
+    bs_boosts: dict = field(default_factory=_bs_default_boosts)   # blendshape 空间（VMC/OSC 输出）
 
     def copy(self) -> "Shaping":
         return Shaping(boosts={p: dict(b) for p, b in self.boosts.items()},
-                       couplings=[tuple(c) for c in self.couplings])
+                       couplings=[tuple(c) for c in self.couplings],
+                       bs_boosts={k: dict(b) for k, b in self.bs_boosts.items()})
 
 
 DEFAULT_SHAPING = Shaping()
@@ -273,6 +331,7 @@ def shaping_to_dict(sh: Shaping) -> dict:
         "param_boosts": {p: dict(b) for p, b in sh.boosts.items()},
         "couplings": [{"target": t, "source": s, "gate": g, "k": k,
                        "must_beat": list(mb)} for t, s, g, k, mb in sh.couplings],
+        "bs_boosts": {k: dict(b) for k, b in sh.bs_boosts.items()},
     }
 
 
@@ -300,7 +359,24 @@ def shaping_from_dict(d: dict | None) -> "Shaping | None":
                               float(c.get("k", 0.0)), tuple(c.get("must_beat") or ())))
         except (KeyError, TypeError, ValueError):
             continue
-    return Shaping(boosts=boosts, couplings=couplings)
+    bs_boosts = None
+    if isinstance(d.get("bs_boosts"), dict):   # 缺省=用默认表；显式给出（哪怕空）才覆盖
+        bs_boosts = {}
+        for k, b in d["bs_boosts"].items():
+            if not isinstance(b, dict):
+                continue
+            clean = {}
+            for e, v in b.items():
+                if e not in EMOTIONS:
+                    continue
+                try:
+                    clean[e] = float(v)
+                except (TypeError, ValueError):
+                    continue
+            bs_boosts[k] = clean
+    if bs_boosts is None:
+        return Shaping(boosts=boosts, couplings=couplings)
+    return Shaping(boosts=boosts, couplings=couplings, bs_boosts=bs_boosts)
 
 
 # 「试表情」参考底 pose：一套非零基值，让 boost/耦合的效果不照镜子也能在 VTS 里看见
@@ -389,4 +465,26 @@ def amplify(base: dict, emo: dict, global_gain: float = 1.5,
         if target > out[tgt]:
             hi = RANGES.get(tgt, (-1.0, 1.0))[1]
             out[tgt] = min(target, hi)
+    return out
+
+
+def bs_amplify(base_bs: dict, emo: dict, global_gain: float = 1.4,
+               emotion_gains: dict = None, shaping: "Shaping | None" = None) -> dict:
+    """blendshape 空间的情绪 EQ：把放大后的 ARKit blendshape 喂给 3D 目标（VMC/OSC 输出）。
+
+    与 amplify 同构：值 × (全局 gain if 吃全局 else 1) × (1 + Σ eg·情绪·boost)，clamp 0..1。
+    只处理 base_bs 里出现的键（检测器给的形状）；用户 bs_boosts 覆盖 BS_CONFIG 默认。
+    persona 负增益 = 压向 0，与 Live2D 空间语义一致。
+    """
+    sh = shaping if shaping is not None else DEFAULT_SHAPING
+    eg = {e: _clamp(x, -1.0, 1.0) for e, x in (emotion_gains or {}).items()}
+    out = {}
+    for k, v in base_bs.items():
+        use_gg, default_boosts = BS_CONFIG.get(k, (False, {}))
+        boosts = sh.bs_boosts.get(k, default_boosts)
+        mult = global_gain if use_gg else 1.0
+        extra = 1.0
+        for e, b in boosts.items():
+            extra += eg.get(e, 1.0) * emo.get(e, 0.0) * b
+        out[k] = _clamp01(v * mult * extra)
     return out

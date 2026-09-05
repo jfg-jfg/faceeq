@@ -85,9 +85,10 @@ ck("(e) 空帧→空参数（webcam 无脸/手机断流一致）", base_map(Fram
 
 # (f) engine 端到端：悲伤脸 blendshape（手机能读 AU15/AU1）→ sad 主导、有参数出
 emo = {"happy": 0.0, "angry": 0.0, "sad": 0.0, "surprised": 0.0, "disgust": 0.0}
-params, dom, ff = engine.process_frame(f_phone, 1.4, emo, None)
-ck(f"(f) 端到端有参数（{len(params)} 个）", len(params) > 0)
-ck(f"(f) sad 主导（dominant={dom}）", dom == "sad")
+res = engine.process_frame(f_phone, 1.4, emo, None)
+ck(f"(f) 端到端有参数（{len(res.params)} 个）", len(res.params) > 0)
+ck(f"(f) sad 主导（dominant={res.dominant}）", res.dominant == "sad")
+ck(f"(f) bs_params 同步产出（{len(res.bs_params)} 形状，VMC 输出空间）", len(res.bs_params) >= 20)
 
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}"))
 sys.exit(1 if failures else 0)
