@@ -10,18 +10,19 @@ FaceEQ 默认用一套通用增益。但**检测器对不同脸/摄像头/光照
 PYTHONUTF8=1 .venv/Scripts/python.exe probes\calibrate.py
 ```
 
-流程（11 步，约 2 分钟）——**单 cv2 窗**：左侧摄像头画面（顶部 AU 名/指令/live 值）+ 右侧
-**方向示意图**（cv2 自绘极简脸 + 该 AU 的动作箭头，示意"往哪动"）。
-1. 每个 AU：看右侧示意图 + 读指令 → 照着做并**保持** → 看右上角 `live xxx` 确认在爬 → 按
+流程（11 步，约 2 分钟）——**单 cv2 窗**：左侧摄像头画面（顶部 AU 名 / 右上角 live 值）+ 右侧
+**PIL 渲染的中英文文字提示面板**（大字动作指令，如「嘴角上扬（大笑）/ mouth corners UP」）。
+1. 每个 AU：读右侧中英文指令 → 照着做并**保持** → 看画面右上角 `live xxx` 确认在爬 → 按
    **空格**采样 ~1 秒 → 自动下一个。
-   - 按键：`SPACE` 采样当前 AU；`ESC` 跳过当前；`q` 退出。
+   - 按键：`SPACE` 采样当前 AU；`ESC` 跳过当前（该 AU 不判死，用默认增益 1.0）；`q` 退出。
 2. 跑完写两个文件：
    - `profiles/calibration.json` —— 你的 profile（引擎读这个）；
-   - `probes/calibration_result.txt` —— 人读报告（每 AU 的 neutral/max/delta/gain + dead 列表 + 脏 neutral/负 delta 警告）。
+   - `profiles/calibration_result.txt` —— 人读报告，与 profile 同目录（每 AU 的
+     neutral/max/delta/gain + dead/skipped 列表 + 脏 neutral/负 delta 警告）。
 
 `--out 路径`：改 profile 输出位置。
-（早期版本用 Live2D Haru 当 AU 示范，精度不够——browIn/browUp 同参、press/sneer 无参、形变粗；
- 改用 cv2 自绘示意图，且单窗省掉了 glfw+cv2 双窗的焦点坑。）
+（UI 演进：早期用 Live2D Haru 当 AU 示范，精度不够——browIn/browUp 同参、press/sneer 无参；
+第二版 cv2 自绘方向箭头仍不直观；现用 PIL 中英文文字面板。单窗省掉了 glfw+cv2 双窗的焦点坑。）
 
 ## 跑 FaceEQ（profile 自动）
 
@@ -66,6 +67,9 @@ PYTHONUTF8=1 .venv\Scripts\python.exe main.py --vts --no-preview
 （嘴角下垂 AU15、内眉抬 AU1、皱鼻 AU9）严重欠读**——这是检测器/硬件限制，不是你做不到位，
 也不是增益能救的（增益只会放大噪声）。webcam 上 sad/disgust 常因此判死；要救活它们得走
 iPhone/深度检测路线（TrueDepth 能读这些 AU）。dead AU 存 `null`，引擎忽略，不会误放大噪声。
+
+报告里的 `skipped` 是另一回事：校准时按 `ESC` 跳过的 pose——「没测」≠「测不到」，这些 AU
+**不判死**、用默认增益 1.0；想要 per-face 增益就重跑校准补测。
 
 ## 原理
 

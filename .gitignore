@@ -26,6 +26,10 @@ secrets/
 
 # ===== Claude Code（保留团队共享配置，仅忽略本地私有设置）=====
 .claude/settings.local.json
+.zcode/
+
+# ===== 本地安全扫描历史（mimosa）=====
+.mimosa/
 
 # ===== 日志与临时文件 =====
 *.log
@@ -53,5 +57,6 @@ profiles/*.json
 !profiles/example.json
 presets/*.json
 probes/calibration_result.txt
+profiles/calibration_result.txt
 FaceEQ.zip
 dist/

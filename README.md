@@ -32,6 +32,10 @@ PYTHONUTF8=1 .venv\Scripts\python.exe probes\calibrate.py
 **② 接入 VTube Studio**：[docs/vts-setup.md](docs/vts-setup.md)（连接、参数映射、红线）。
 **注意**：VTS 里把摄像头跟踪关掉（Camera → None/Off），让 FaceEQ 独占摄像头。
 
+**换手机面捕（可选，推荐）**：用 iFacialMocap(iOS) / MeowFace(Android) 代替摄像头——
+TrueDepth 精度能救活 webcam 读不到的 **sad / disgust**，还不占摄像头。见
+[docs/phone-tracking.md](docs/phone-tracking.md)。
+
 **③ 运行（推荐 GUI）**：
 ```bash
 PYTHONUTF8=1 .venv\Scripts\python.exe gui.py
@@ -50,5 +54,6 @@ PYTHONUTF8=1 .venv\Scripts\python.exe main.py --vts --no-preview --happy 1.0 --a
 
 ## 状态
 开发中。webcam 版**可用情绪**：happy / surprised / angry；sad / disgust 在普通 RGB 摄像头
-上检测不到（细微 AU 严重欠读，非权重问题），等 iPhone/深度检测路线。设计细节见各 docstring
-与 `docs/`。本项目只做本地处理，**无遥测、不发送任何数据**。
+上检测不到（细微 AU 严重欠读，非权重问题）——**手机面捕路线（iFacialMocap/MeowFace）已实现**，
+TrueDepth 精度预期救活这两个情绪（见 [docs/phone-tracking.md](docs/phone-tracking.md)）。
+设计细节见各 docstring 与 `docs/`。本项目只做本地处理，**无遥测、不发送任何数据**。

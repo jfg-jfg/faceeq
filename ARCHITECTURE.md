@@ -5,8 +5,10 @@ FaceEQ = VTuber 表情 EQ 过滤器：实时面捕 → 按情绪差异化放大/
 ## 管线
 
 ```
-摄像头 → Capture(mediapipe blendshape) → engine.process_frame
-  → mapping.base_map(特征→Live2D参数) → emotions.signals(检测情绪) → emotions.amplify(gain+boost+coupling)
+捕捉源（open_source 工厂）：webcam Capture(mediapipe) | 手机 PhoneCapture(iFacialMocap/MeowFace UDP)
+  → engine.process_frame
+  → mapping.base_map(特征→Live2D参数；头部姿态/眼球优先手机直传，无则特征点几何)
+  → emotions.signals(检测情绪) → emotions.amplify(gain+boost+coupling)
   → Smoother(EMA消抖) → VTSBridge.inject(WebSocket set模式) → VTS → 模型
 ```
 
@@ -16,9 +18,9 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 
 | 模块 | 职责 |
 |---|---|
-| `faceeq/capture.py` | mediapipe FaceLandmarker → Frame(bs + lms + img)；list_sources 探测摄像头 |
+| `faceeq/capture.py` | 捕捉源：open_source 工厂；Capture(mediapipe blendshape+478点) | PhoneCapture(iFacialMocap/MeowFace UDP：52 bs+头旋转+眼球，断流超时→空帧) |
 | `faceeq/mapping.py` | base_map：52 blendshape + 478 landmarks → 13 Live2D 参数；RANGES 量程 |
-| `faceeq/emotions.py` | signals：blendshape → 5 情绪强度（EMFACS 规则）；amplify：per-emotion boost + 耦合 |
+| `faceeq/emotions.py` | signals：blendshape → 5 情绪强度（EMFACS 规则）；amplify：per-emotion boost + 耦合；Shaping：用户可调塑造配置（默认=硬编码基线，序列化进预设/profile）；apply_custom：自定义复合表情加权注入 |
 | `faceeq/profile.py` | 校准 profile（JSON）：au_gains/neutral/dead/emotion_scale；load/resolve/write |
 | `faceeq/smooth.py` | Smoother：per-param EMA（对口型减半）；set_strength 实时改 |
 | `faceeq/vts_bridge.py` | VTSBridge：WebSocket 连接/鉴权/发现/自建参数(capability-aware)/注入/重连 |
@@ -49,7 +51,7 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 
 **向导** (`probes/calibrate.py`)：单 cv2 窗（左摄像头 + 右 PIL 中英文提示面板），11 pose（neutral + 10 AU），SPACE 采样 ~1s 均值 → 算 au_gains（每 AU max 归一到 target_delta=0.5）→ 写 `profiles/calibration.json`。
 
-**profile schema**：`au_gains`(null=dead)、`neutral`、`dead`、`target_delta`、`emotion_scale`（resolve 时预算）、`captures`、passthrough(global_gain/smooth/emotion_gains=null)。
+**profile schema**：`au_gains`(null=dead)、`neutral`、`dead`、`target_delta`、`emotion_scale`（resolve 时预算）、`captures`、可选 `shaping`（塑造配置，缺省=默认）、passthrough(global_gain/smooth/emotion_gains=null)。
 
 **resolve 优先级**：CLI > profile > 代码默认。
 
@@ -60,8 +62,10 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 - **PySide6 + QSS**：VTS 风格深色蓝高亮（#252a35/#4a9eff/圆角）。
 - **FaceEQWorker(QObject)**：QThread 跑 engine.process_frame 循环 + Smoother + VTSBridge.inject + VTS 重连（3 次指数退避）。emit status/dominant/fps/error/finished。
 - **Params(threading.Lock)**：GUI 写、worker 读；滑块拖动实时改（不用重启）。
-- **预设系统**：`presets/<name>.json` 存 EQ 快照（gain+emotions+smooth）；GUI 下拉加载 + 存/删（覆盖/新建选项）；名字消毒。
-- **CalibrateRunner(QObject)**：QThread subprocess，不阻塞 GUI。
+- **预设系统**：`presets/<name>.json` 存 EQ 快照（gain+emotions+smooth；v2 另含 shaping 塑造配置，旧预设兼容）；GUI 下拉加载 + 存/删（覆盖/新建选项）；名字消毒。
+- **高级塑造（ShapingDialog，非模态）**：参数×情绪 boost 矩阵 + 耦合开关/强度 + 一键恢复默认 + 试表情按钮（engine 参考底 pose + 合成情绪 1.5s，不照镜子预览）；改动即时写 Params。
+- **自定义复合表情**：`custom_expressions.json`（随仓库预置示例）存定义 {名字: {基础情绪: 权重}}，GUI 每定义一行滑块（激活度 0..1）+ 新建/编辑/删除；激活时 additive 注入情绪向量（persona 负增益语义沿用），注入强度盖过检测时状态栏显示自定义名；定义随预设 v2 携带。
+- **CalibrateRunner(QObject)**：QThread subprocess，不阻塞 GUI；透传退出码分档提示（完成/崩溃/未生成 profile）。
 - 情绪滑块 init 0（0=不塑造），精度 0.01。
 
 ## VTS 集成（vts_bridge.py）
@@ -71,15 +75,17 @@ GUI (gui.py) 在 QThread 里跑这个循环，滑块实时调参数；CLI (main.
 - 注入 VTS 默认输入参数（FaceAngleX/MouthSmile/BrowLeftY…，语义变换）+ 4 个自建自定义参数（faceeqEyeSmile/BrowForm/MouthFrown/BrowDown）。
 - **capability-aware**：`discover_model_params()`（Live2DParameterListRequest）→ 只创建模型有对应 Live2D 参数的自定义参数。
 - **VTS 红线**：用户须在 VTS 参数映射里设 平滑=0、倍率=1（faceamp 已做 gain+EMA，VTS 再叠=双级串联）。
-- `_send` 超时 raise ConnectionError → worker 重连逻辑触发。
+- `_send` 超时 / `inject` 连接类失败均 raise ConnectionError → GUI worker 重连逻辑触发（指数退避 3 次）；CLI 捕获后提示掉线并继续跑。
 - 摄像头冲突：FaceEQ + VTS 同抓摄像头 → 1fps。FaceEQ 独占（VTS 摄像头设 None）= 满速。
 
-## webcam 限制
+## webcam 限制 / 手机源
 
 RGB 摄像头（mediapipe blendshape）对细微 AU 严重欠读：
-- **可用**：happy（smile/squint）、surprised（jawOpen）、angry（browDn）。
+- **可用**：happy（smile/squint）、surprised（jawOpen/eyeWide）、angry（browDn）。
 - **不可用**：sad（frown/browIn 死）、disgust（sneer 死）。
-- iPhone/TrueDepth 路线（待实现）将救活 sad/disgust + 消除摄像头冲突。
+- **手机面捕路线（已实现）**：iFacialMocap(iOS)/MeowFace(Android) 兼容 UDP 源
+  （`PhoneCapture`，见 docs/phone-tracking.md）——TrueDepth 能读 AU15/AU1/AU9，
+  sad/disgust 预期复活；且不占摄像头，冲突消失。head pose/眼球直取手机旋转数据（更准）。
 
 ## 开发工具（probes/）
 

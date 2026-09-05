@@ -20,6 +20,8 @@
 （所有表情参数 resting=0，代入即 gain·base，等价线性），故核心仍是带符号增益 +
 耦合；非线性噪声压制曲线缓后（当前未观察到噪声问题）。
 """
+from dataclasses import dataclass, field
+
 from .mapping import RANGES
 
 EMOTIONS = ["happy", "angry", "sad", "surprised", "disgust"]
@@ -247,20 +249,121 @@ def dominant(emo: dict, threshold: float = 0.15) -> str:
     return name if val >= threshold else "neutral"
 
 
+# ---- 用户可调塑造配置（Phase 2a）----
+# 默认值 = 上面 PARAM_CONFIG/COUPLING 硬编码基线（no-regression：profile_smoke 钉死
+# 「默认配置输出 == 硬编码基线」）。boosts={参数: {情绪: 附加放大系数}}；
+# couplings=[(目标,源,门情绪,k,必须胜过)]。谁吃全局 gain 是结构项（对口型快车道、
+# 眨眼 1:1 等），不开放给用户调，仍查 PARAM_CONFIG 的第一列。
+@dataclass
+class Shaping:
+    boosts: dict = field(default_factory=lambda: {p: dict(b) for p, (_, b) in PARAM_CONFIG.items()})
+    couplings: list = field(default_factory=lambda: [tuple(c) for c in COUPLING])
+
+    def copy(self) -> "Shaping":
+        return Shaping(boosts={p: dict(b) for p, b in self.boosts.items()},
+                       couplings=[tuple(c) for c in self.couplings])
+
+
+DEFAULT_SHAPING = Shaping()
+
+
+def shaping_to_dict(sh: Shaping) -> dict:
+    """Shaping → JSON 友好 dict（预设 / profile 持久化用）。"""
+    return {
+        "param_boosts": {p: dict(b) for p, b in sh.boosts.items()},
+        "couplings": [{"target": t, "source": s, "gate": g, "k": k,
+                       "must_beat": list(mb)} for t, s, g, k, mb in sh.couplings],
+    }
+
+
+def shaping_from_dict(d: dict | None) -> "Shaping | None":
+    """dict → Shaping（容错：非法项丢弃）。None/空 → None（调用方用默认塑造）。"""
+    if not d:
+        return None
+    boosts = {}
+    for p, b in (d.get("param_boosts") or {}).items():
+        if not isinstance(b, dict):
+            continue
+        clean = {}
+        for e, v in b.items():
+            if e not in EMOTIONS:
+                continue
+            try:
+                clean[e] = float(v)
+            except (TypeError, ValueError):
+                continue
+        boosts[p] = clean
+    couplings = []
+    for c in d.get("couplings") or []:
+        try:
+            couplings.append((c["target"], c["source"], c["gate"],
+                              float(c.get("k", 0.0)), tuple(c.get("must_beat") or ())))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return Shaping(boosts=boosts, couplings=couplings)
+
+
+# 「试表情」参考底 pose：一套非零基值，让 boost/耦合的效果不照镜子也能在 VTS 里看见
+# （试表情时引擎跳过面捕，直接拿这套底 + 合成情绪值走 amplify）。
+REFERENCE_POSE = {
+    "ParamMouthForm": 0.6, "ParamMouthOpenY": 0.15,
+    "ParamBrowLY": 0.5, "ParamBrowRY": 0.5,
+    "ParamBrowLForm": -0.3, "ParamBrowRForm": -0.3,
+    "ParamEyeLOpen": 0.7, "ParamEyeROpen": 0.7,
+    "ParamEyeLSmile": 0.25, "ParamEyeRSmile": 0.25,
+}
+
+
+def reference_pose() -> dict:
+    return dict(REFERENCE_POSE)
+
+
+# ---- 自定义复合表情（Phase 2b）----
+# 定义 = {名字: {基础情绪: 权重}}，如「害羞」= happy 0.35 + surprised 0.30。
+# 权重可负（该表情压某个基础情绪）。激活度 a∈[0,1]（GUI 滑块）：
+# 注入量 = 权重 × a，additive 叠到检测情绪上再 clamp 0..1，之后走 amplify 全链路
+# （persona 情绪滑块的负增益语义原样作用于注入值——「害羞」也怕扑克脸人设压 happy）。
+def apply_custom(emo: dict, exprs: dict, act: dict):
+    """把激活的自定义表情加权注入情绪向量。
+
+    emo: 检测到的情绪向量；exprs: {名字: {情绪: 权重}}；act: {名字: 激活度 0..1}。
+    返回 (新情绪向量, 主导自定义表情名或 None)。主导判定：注入强度（激活度×最大
+    权重）超过检测最大值时，GUI 状态栏显示自定义名而不是底层情绪名。
+    """
+    out = dict(emo)
+    det_max = max(emo.values()) if emo else 0.0
+    best_name, best_val = None, 0.0
+    for name, a in (act or {}).items():
+        w = (exprs or {}).get(name)
+        if not w or a <= 0:
+            continue
+        for e, weight in w.items():
+            if e in EMOTIONS and weight:
+                out[e] = _clamp01(out.get(e, 0.0) + weight * a)
+        strength = a * max(abs(v) for v in w.values())
+        if strength > best_val:
+            best_name, best_val = name, strength
+    return out, (best_name if best_val > det_max else None)
+
+
 def amplify(base: dict, emo: dict, global_gain: float = 1.5,
-            emotion_gains: dict = None) -> dict:
+            emotion_gains: dict = None, shaping: "Shaping | None" = None) -> dict:
     """底数 base（来自 mapping.base_map）× (global_gain + 情绪差异化) + 跨参数耦合。
 
     emotion_gains: {情绪: 有符号强度 ∈[-1,1]}（入口 clamp 到 [-1,1]）。
       1.0 = 该情绪按规则全量夸张（默认）；0 = 不对该情绪做额外塑造；
       负值 = 反向抑制（把该情绪相关参数往中性 0 压，做扑克脸/死板人设）。
+    shaping: 用户塑造配置（boost 矩阵 + 耦合规则）；None = DEFAULT_SHAPING
+      （逐字等于硬编码基线，no-regression）。
     最终值 = base * (global_gain if 吃全局 else 1) * (1 + Σ eg·强度·boost)，
-    再按 COUPLING 做跨参数耦合后处理（如 happy 时眼笑追嘴笑）。
+    再按 coupling 做跨参数耦合后处理（如 happy 时眼笑追嘴笑）。
     """
+    sh = shaping if shaping is not None else DEFAULT_SHAPING
     eg = {e: _clamp(x, -1.0, 1.0) for e, x in (emotion_gains or {}).items()}
     out = {}
     for p, v in base.items():
-        use_gg, boosts = PARAM_CONFIG.get(p, (False, {}))
+        use_gg = PARAM_CONFIG.get(p, (False, {}))[0]
+        boosts = sh.boosts.get(p, {})
         mult = global_gain if use_gg else 1.0
         extra = 1.0
         for e, b in boosts.items():
@@ -271,7 +374,7 @@ def amplify(base: dict, emo: dict, global_gain: float = 1.5,
     # 跨参数耦合（输出空间后处理）：门情绪>0、且胜过 must_beat 里的竞争情绪时，把目标抬向
     # k·|源正半轴|·门情绪·该情绪增益，只抬不压。源名前缀 '-' 取反（双极参数负半轴，如下垂）。
     # eg 为负时 target≤0 自然跳过 → persona 抑制时不耦合抬，避免「一处被压、另一处抬」的不一致。
-    for tgt, src, gate, k, must_beat in COUPLING:
+    for tgt, src, gate, k, must_beat in sh.couplings:
         g = emo.get(gate, 0.0)
         if g <= 0 or tgt not in out:
             continue

@@ -1,0 +1,17 @@
+{
+  "害羞 shy": {
+    "happy": 0.35,
+    "surprised": 0.3,
+    "angry": -0.1
+  },
+  "委屈 sulky": {
+    "sad": 0.4,
+    "angry": 0.15,
+    "happy": -0.2
+  },
+  "嚣张 smug": {
+    "happy": 0.45,
+    "angry": 0.25,
+    "surprised": -0.15
+  }
+}

@@ -59,11 +59,16 @@ def _eye_ball_x(iris):
 
 
 def base_map(f: Frame) -> dict:
-    """一帧面捕 → 原始映射信号（无放大、无最终 clamp）。放大交给 emotions.amplify。"""
-    out = {}
-    if not f.lms:
-        return out
+    """一帧面捕 → 原始映射信号（无放大、无最终 clamp）。放大交给 emotions.amplify。
+
+    表情（眉/眼/嘴）← blendshape，webcam / 手机源共用；头部姿态 / 眼球方向
+    优先用手机源直传数据（rot / eye，TrueDepth 精度），没有（webcam）时回落
+    特征点几何。混合输入优先级是设计里定的。
+    """
+    if not f.bs and f.rot is None and not f.lms:
+        return {}   # 空帧（webcam 无脸 / 手机未连或断流）
     g = f.bs_get
+    out = {}
 
     def p(idx):             # 取第 idx 个特征点 (x,y,z)
         return f.lms[idx]
@@ -74,9 +79,6 @@ def base_map(f: Frame) -> dict:
     # ---- 眼睛笑（眯眼）----
     out["ParamEyeLSmile"] = g("eyeSquintLeft")
     out["ParamEyeRSmile"] = g("eyeSquintRight")
-    # ---- 眼球方向 ----
-    iris = [p(i) for i in (_L_IRIS + _R_IRIS)]
-    out["ParamEyeBallX"] = _eye_ball_x(iris)
     # ---- 眉毛 ----
     brow_up_l = (g("browInnerUp") + g("browOuterUpLeft")) / 2
     brow_up_r = (g("browInnerUp") + g("browOuterUpRight")) / 2
@@ -89,10 +91,21 @@ def base_map(f: Frame) -> dict:
     frown = (g("mouthFrownLeft") + g("mouthFrownRight")) / 2
     out["ParamMouthForm"] = smile - frown
     out["ParamMouthOpenY"] = g("jawOpen")
-    # ---- 头部姿态 ----
-    hp = [p(i) for i in _HEAD]
-    roll, yaw, pitch = _head_pose(hp)
-    out["ParamAngleX"] = yaw
-    out["ParamAngleY"] = pitch
-    out["ParamAngleZ"] = roll
+    # ---- 头部姿态（手机旋转直取 > 特征点几何）----
+    if f.rot is not None:
+        out["ParamAngleX"], out["ParamAngleY"], out["ParamAngleZ"] = f.rot
+    elif f.lms:
+        hp = [p(i) for i in _HEAD]
+        roll, yaw, pitch = _head_pose(hp)
+        out["ParamAngleX"] = yaw
+        out["ParamAngleY"] = pitch
+        out["ParamAngleZ"] = roll
+    # ---- 眼球方向（手机眼数据直取 > 虹膜几何；webcam 几何只能估水平）----
+    if f.eye is not None:
+        lx, ly, rx, ry = f.eye
+        out["ParamEyeBallX"] = _clamp((lx + rx) / 2, -1, 1)
+        out["ParamEyeBallY"] = _clamp((ly + ry) / 2, -1, 1)
+    elif f.lms:
+        iris = [p(i) for i in (_L_IRIS + _R_IRIS)]
+        out["ParamEyeBallX"] = _eye_ball_x(iris)
     return out

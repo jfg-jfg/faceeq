@@ -10,7 +10,7 @@ profile 把 per-AU 欠读补偿（曾在 emotions.py 硬编码为 SAD_FROWN_GAIN
 import json
 from dataclasses import dataclass, field
 
-from .emotions import EMOTIONS, RAW_KEYS, compute_emotion_scale
+from .emotions import EMOTIONS, RAW_KEYS, compute_emotion_scale, shaping_from_dict
 
 SCHEMA_VERSION = 1
 DEFAULT_GLOBAL_GAIN = 1.4
@@ -35,11 +35,12 @@ class Calib:
 @dataclass
 class Resolved:
     """resolve() 产物：main.py 实际用的有效值。calib=None ⇒ 无 profile，
-    emotions.signals 走 legacy 路径（逐字等于今天）。"""
+    emotions.signals 走 legacy 路径（逐字等于今天）。shaping=None ⇒ 引擎用默认塑造。"""
     global_gain: float
     smooth: float
     emotion_gains: dict
     calib: Calib | None = None
+    shaping: object | None = None
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Profile:
     demographic: object | None = None
     camera: dict | None = None
     created_at: str | None = None
+    shaping: dict | None = None             # 可选塑造配置（emotions.shaping_from_dict 解析）
     dead: set = field(default_factory=set)   # 校准判死的 AU 键集（au_gains 原为 null）
     target_delta: float = 0.5                # 校准目标 delta（每 AU max 归一到它）
 
@@ -109,6 +111,7 @@ def load_profile(path: str | None) -> Profile | None:
         demographic=data.get("demographic"),
         camera=data.get("camera"),
         created_at=data.get("created_at"),
+        shaping=data.get("shaping") or None,
         dead=dead,
         target_delta=(data.get("target_delta") or 0.5),
     )
@@ -144,8 +147,9 @@ def resolve(args, profile: Profile | None) -> Resolved:
                       target_delta=profile.target_delta, emotion_scale=es)
     else:
         calib = None
+    shaping = shaping_from_dict(profile.shaping) if (profile and profile.shaping) else None
     return Resolved(global_gain=global_gain, smooth=smooth,
-                    emotion_gains=eg, calib=calib)
+                    emotion_gains=eg, calib=calib, shaping=shaping)
 
 
 def write_profile(path: str, data: dict) -> None:

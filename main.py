@@ -22,7 +22,7 @@ import sys
 import time
 
 from faceeq import emotions, engine
-from faceeq.capture import Capture
+from faceeq.capture import PHONE_PORT, open_source
 from faceeq.mapping import base_map
 from faceeq.render import Live2DRenderer
 
@@ -31,10 +31,12 @@ DEFAULT_PROFILE = os.path.join("profiles", "calibration.json")   # 自动探测 
 CALIBRATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probes", "calibrate.py")
 
 
-def _run_wizard(source):
+def _run_wizard(source, phone_port=PHONE_PORT):
     """subprocess 启动校正向导（首跑 / 重校），等它跑完返回。"""
     import subprocess
     cmd = [sys.executable, CALIBRATE, "--source", str(source)]
+    if source == "phone":
+        cmd += ["--phone-port", str(phone_port)]
     print(f"[FaceEQ] 启动校正向导：{' '.join(cmd)}")
     subprocess.run(cmd, check=False)
 
@@ -43,6 +45,11 @@ def main():
     ap = argparse.ArgumentParser(description="FaceEQ —— VTuber 表情增益器")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="model3.json 路径")
     ap.add_argument("--source", type=int, default=0, help="摄像头序号")
+    ap.add_argument("--phone", action="store_true",
+                    help="用手机面捕（iFacialMocap/MeowFace 兼容 UDP）代替摄像头，"
+                         "详见 docs/phone-tracking.md")
+    ap.add_argument("--phone-port", type=int, default=PHONE_PORT,
+                    help="手机 UDP 端口（默认 49983，与手机 app 里填的一致）")
     ap.add_argument("--gain", type=float, default=None,
                     help="表情参数全局放大倍数（1.0=1:1，越大越夸张）；None=用 profile 或默认 1.4")
     ap.add_argument("--smooth", type=float, default=None,
@@ -65,12 +72,15 @@ def main():
                         help=f"{e} 情绪强度 -1..1：1.0=全量夸张(默认)，0=不额外塑造，负=抑制该情绪往中性压")
     args = ap.parse_args()
 
+    # 捕捉源：--phone 走手机 UDP，否则摄像头序号（工厂 open_source 统一创建）
+    src = "phone" if args.phone else args.source
+
     # profile 路径决策：--legacy 无；--recalibrate 先重校；--profile 显式；否则自动探测(首跑→校准)。
     from faceeq import profile as profile_mod
     if args.legacy:
         profile_path = None
     elif args.recalibrate:
-        _run_wizard(args.source)
+        _run_wizard(src, args.phone_port)
         if not os.path.exists(DEFAULT_PROFILE):
             print(f"[FaceEQ] 重校未生成 {DEFAULT_PROFILE}，退出。", file=sys.stderr)
             sys.exit(1)
@@ -81,7 +91,7 @@ def main():
         profile_path = DEFAULT_PROFILE            # 自动用已有 profile
     else:
         print("[FaceEQ] 首次使用：先校准你的脸（照右侧中英文提示做 11 个表情，约 2 分钟）。")
-        _run_wizard(args.source)
+        _run_wizard(src, args.phone_port)
         profile_path = DEFAULT_PROFILE if os.path.exists(DEFAULT_PROFILE) else None
         if profile_path is None:
             print("[FaceEQ] 校准未完成（没生成 profile）。重跑 probes/calibrate.py，或用 --legacy。",
@@ -101,7 +111,7 @@ def main():
     elif args.legacy:
         print("[profile] --legacy：用硬编码默认（无 profile）。")
 
-    cap = Capture(source=args.source)
+    cap = open_source(src, args.phone_port)
 
     ren = None
     if not args.no_preview:
@@ -130,6 +140,7 @@ def main():
     timer = time.time()
     t_start = time.time()
     last_params = {}
+    vts_down = False
     dom = "neutral"
 
     try:
@@ -139,7 +150,8 @@ def main():
             if ren and ren.should_close():
                 break
             f = cap.read()
-            params, new_dom, face_found = engine.process_frame(f, cfg.global_gain, eg, cfg.calib)
+            params, new_dom, face_found = engine.process_frame(
+                f, cfg.global_gain, eg, cfg.calib, shaping=cfg.shaping)
             if params:                       # 检测到脸 → 更新；否则保持上一帧
                 last_params = params
                 dom = new_dom
@@ -149,7 +161,13 @@ def main():
                 ren.frame()
             if bridge and last_params:
                 # 注入前过和预览一致的 EMA（对口型减半）：VTS 里嘴不延迟、表情不抖
-                bridge.inject(bridge_smoother.step(last_params), face_found=face_found)
+                try:
+                    bridge.inject(bridge_smoother.step(last_params), face_found=face_found)
+                    vts_down = False
+                except ConnectionError as e:
+                    if not vts_down:      # 只在掉线瞬间提示一次，避免每帧刷屏
+                        print(f"[vts] 注入失败（VTS 掉线？）: {e}")
+                        vts_down = True
 
             fps += 1
             if time.time() - timer >= 1.0:

@@ -1,16 +1,15 @@
 """
 可复用 Live2D 渲染器：glfw 窗口 + live2d.v3 加载/渲染 + 每参数 EMA 平滑。
 
-平滑：每帧把当前值朝目标值收敛 a∈(0,1]，a 越小越稳（消抖）、越大越跟手。
-嘴参数（对口型）平滑减半，保低延迟；眉/眼/姿态偏稳。smooth∈[0,1] 是总强度。
+平滑逻辑统一用 smooth.Smoother（与 VTS 注入路径同一份实现，改规则只动一处）：
+每帧把当前值朝目标值收敛，嘴参数（对口型）平滑减半保低延迟。smooth∈[0,1] 是总强度。
 """
 import os
 
 import glfw
 import live2d.v3 as live2d
 
-# 低延迟快车道：只有对口型（jawOpen）参数平滑减半；嘴形 MouthForm 现归表情车道
-_MOUTH = {"ParamMouthOpenY"}
+from .smooth import Smoother
 
 
 class Live2DRenderer:
@@ -43,24 +42,17 @@ class Live2DRenderer:
 
         glfw.swap_interval(1)
 
-        self._smooth = smooth
-        self._cur = {}   # 参数名 -> 当前平滑后的值
+        self._smoother = Smoother(smooth)
 
     @property
     def param_ids(self):
         return self._known
 
     def set_params(self, params: dict) -> None:
-        """把 {参数名: 目标值} 写到模型上，途中做 EMA 平滑。"""
-        for name, val in params.items():
+        """把 {参数名: 目标值} 写到模型上，途中经 Smoother 做每参数 EMA（嘴减半）。"""
+        for name, val in self._smoother.step(params).items():
             if self._known is not None and name not in self._known:
                 continue
-            # 总平滑强度 smooth∈[0,1]；嘴减半。a = 1 - 强度 → 收敛比例。
-            s = self._smooth * (0.5 if name in _MOUTH else 1.0)
-            a = max(0.05, 1.0 - s)
-            if name in self._cur:
-                val = self._cur[name] + a * (val - self._cur[name])
-            self._cur[name] = val
             self._model.SetParameterValue(name, val, 1)
 
     def frame(self) -> None:

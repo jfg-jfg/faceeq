@@ -50,6 +50,7 @@ LIVE2D_TO_VTS = {
     "ParamEyeLOpen":   ("EyeOpenLeft", _id),
     "ParamEyeROpen":   ("EyeOpenRight", _id),
     "ParamEyeBallX":   (["EyeLeftX", "EyeRightX"], _id),   # 水平眼球 → 双眼同向
+    "ParamEyeBallY":   (["EyeLeftY", "EyeRightY"], _id),   # 垂直眼球 → 双眼同向（手机源才有数据）
     "ParamMouthOpenY": ("MouthOpen", _id),
     "ParamMouthForm":  ("MouthSmile", _pos),               # 笑保留，皱嘴丢（皱嘴走自定义）
     "ParamBrowLY":     ("BrowLeftY", _pos),                # 挑眉保留，压眉丢（压眉走自定义）
@@ -87,7 +88,7 @@ _CUSTOM_TO_LIVE2D = {
 DEFAULT_URL = "ws://localhost:8001"
 _API = "VTubeStudioPublicAPI"
 _VER = "1.0"
-_TOKEN_FILE = os.path.join(os.path.dirname(__file__), "..", ".vts_token")
+_TOKEN_FILE = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".vts_token"))
 
 
 class VTSBridge:
@@ -301,16 +302,18 @@ class VTSBridge:
             self._ws.send(json.dumps(msg))
             self._last_send = time.time()
             self._drain()   # 丢回包/事件，防止缓冲堆积
-        except Exception as e:
-            print(f"[vts] inject 失败: {e}")
+        except (websocket.WebSocketException, OSError) as e:
+            # 连接类失败必须抛出：GUI worker 靠它触发断线重连（吞掉=重连永远不触发）
+            raise ConnectionError(f"VTS 注入失败: {e}") from e
 
     def _drain(self):
         self._ws.settimeout(0)
         try:
             while True:
                 self._ws.recv()
-        except Exception:
-            pass
+        except websocket.WebSocketTimeoutException:
+            pass   # 立即超时 = 没有待读数据，排空完成（正常路径）
+        # 连接关闭等其他异常不吞：传给 inject → ConnectionError → worker 触发重连
         self._ws.settimeout(2)
 
     def keepalive_ok(self) -> bool:

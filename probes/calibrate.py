@@ -10,8 +10,9 @@ UI 演进：①早期 Live2D Haru 示范（精度不够：browIn/browUp 同参�
 用法：
     PYTHONUTF8=1 .venv/Scripts/python.exe probes/calibrate.py
     PYTHONUTF8=1 .venv/Scripts/python.exe probes/calibrate.py --out profiles/me.json
-按键：保持表情后 SPACE 采样当前 AU；ESC 跳过当前；q 退出。
-产出：写 --out（默认 profiles/calibration.json）+ probes/calibration_result.txt，打印用法命令。
+    PYTHONUTF8=1 .venv/Scripts/python.exe probes/calibrate.py --source phone   # 手机面捕
+按键：保持表情后 SPACE 采样当前 AU；ESC 跳过当前（该 AU 用默认增益 1.0，不判死）；q 退出。
+产出：写 --out（默认 profiles/calibration.json）+ 同目录 calibration_result.txt，打印用法命令。
 """
 import argparse
 import datetime
@@ -24,7 +25,7 @@ import cv2
 import numpy as np
 
 from faceeq import emotions, profile
-from faceeq.capture import Capture
+from faceeq.capture import PHONE_PORT, open_source
 
 # (raw 键, 中文标题, 中文动作, 英文动作). raw 键对应 signals_with_raw 的 raw / profile.RAW_KEYS。
 POSES = [
@@ -80,14 +81,21 @@ def _prompt_panel(zh_title, zh_desc, en_desc):
     return np.array(pil)[:, :, ::-1].copy()   # RGB→BGR
 
 
-def build_profile_dict(records, target_delta, source, demographic):
-    """从 records（每 pose 的平均 raw 字典）构建 profile dict（schema v1）。无 neutral → None。"""
+def build_profile_dict(records, target_delta, source, demographic, skipped=()):
+    """从 records（每 pose 的平均 raw 字典）构建 profile dict（schema v1）。无 neutral → None。
+    skipped = ESC 跳过的 pose 键。「没测」≠「测不到」：跳过的 AU 不判死，写默认增益 1.0；
+    只有实测 delta≤DEAD_DELTA 才判死（null）。"""
     if "neutral" not in records:
         return None
     base = records["neutral"]
     captures, au_gains = {}, {}
     for k in profile.RAW_KEYS:
         neu = base.get(k, 0.0)
+        if k in skipped:
+            captures[k] = {"neutral": round(neu, 4), "max": None,
+                           "delta": None, "gain": 1.0}
+            au_gains[k] = 1.0
+            continue
         mx = records.get(k, {}).get(k, neu)
         delta = mx - neu
         gain = (target_delta / delta) if delta > DEAD_DELTA else None
@@ -108,7 +116,7 @@ def build_profile_dict(records, target_delta, source, demographic):
     }
 
 
-def build_report(records, target_delta):
+def build_report(records, target_delta, skipped=()):
     if "neutral" not in records:
         return "no NEUTRAL baseline recorded - rerun and capture NEUTRAL first."
     base = records["neutral"]
@@ -118,6 +126,9 @@ def build_report(records, target_delta):
     dead = []
     for k in profile.RAW_KEYS:
         neu = base.get(k, 0.0)
+        if k in skipped:
+            lines.append(f"{k:10s} {neu:8.3f} {'-':>8s} {'-':>8s}    1.0 (skipped)")
+            continue
         mx = records.get(k, {}).get(k, neu)
         delta = mx - neu
         if delta > DEAD_DELTA:
@@ -125,6 +136,10 @@ def build_report(records, target_delta):
         else:
             lines.append(f"{k:10s} {neu:8.3f} {mx:8.3f} {delta:8.3f}     dead")
             dead.append(k)
+    if skipped:
+        lines.append("")
+        lines.append("skipped AUs (not measured; default gain 1.0, NOT dead): "
+                     + ", ".join(k for k in profile.RAW_KEYS if k in skipped))
     if dead:
         lines.append("")
         lines.append("dead AUs (detector can't read on your face): " + ", ".join(dead))
@@ -153,19 +168,42 @@ def show_report(win, report, hint):
     cv2.waitKey(0)
 
 
+def _phone_canvas(f):
+    """手机源无摄像头画面 → 黑底状态画布，保持校准窗口布局可用。"""
+    img = np.zeros((240, 320, 3), dtype="uint8")
+    cv2.putText(img, "PHONE SOURCE (UDP)", (14, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, GREEN, 2, cv2.LINE_AA)
+    if f.bs:
+        cv2.putText(img, "receiving ...", (14, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 1, cv2.LINE_AA)
+    else:
+        cv2.putText(img, "waiting for data ...", (14, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 1, cv2.LINE_AA)
+        cv2.putText(img, "check app IP / firewall", (14, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, GRAY, 1, cv2.LINE_AA)
+    return img
+
+
 def main():
     ap = argparse.ArgumentParser(description="FaceEQ 引导式 AU 校正向导")
-    ap.add_argument("--source", type=int, default=0, help="摄像头序号")
+    ap.add_argument("--source", type=str, default="0",
+                    help="摄像头序号；或 \"phone\" 用手机面捕（iFacialMocap/MeowFace）")
+    ap.add_argument("--phone-port", type=int, default=PHONE_PORT,
+                    help="手机 UDP 端口（仅 --source phone 时生效）")
     ap.add_argument("--out", default=os.path.join("profiles", "calibration.json"),
                     help="profile 输出路径")
     args = ap.parse_args()
 
-    cap = Capture(source=args.source)
+    cap = open_source(args.source, args.phone_port)
     cam_win = "FaceEQ calibrate (SPACE=capture / ESC=skip / q=quit)"
     cv2.namedWindow(cam_win, cv2.WINDOW_AUTOSIZE)
+    if args.source == "phone":
+        print("手机源：在手机 app（iFacialMocap/MeowFace）里填本机 IP 与端口后开始发送；"
+              "无摄像头画面预览，黑底画布显示收流状态。")
     print("看右侧中英文提示 + 左侧 live 值，保持表情后按 SPACE 采样。")
 
     records = {}
+    skipped = set()      # ESC 跳过的 pose 键（不判死，写默认增益 1.0）
     i = 0
     state = "prompt"     # prompt | capturing
     buf = []
@@ -177,7 +215,7 @@ def main():
             f = cap.read()
             img = f.img
             if img is None:
-                continue
+                img = _phone_canvas(f)   # 手机源：无摄像头画面 → 状态画布
             key_name, zh_title, zh_desc, en_desc = POSES[i]
             raw = emotions.signals_with_raw(f.bs)[1] if f.bs else {}
             panel = _prompt_panel(zh_title, zh_desc, en_desc)
@@ -199,7 +237,11 @@ def main():
                             (10, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, YELLOW, 2, cv2.LINE_AA)
                 if len(buf) >= CAPTURE_FRAMES:
-                    avg = {kk: sum(d.get(kk, 0.0) for d in buf) / len(buf) for kk in buf[0]}
+                    # 按键取有效帧平均：某键个别帧缺失时不以 0.0 稀释均值
+                    avg = {}
+                    for kk in buf[0]:
+                        vals = [d[kk] for d in buf if kk in d]
+                        avg[kk] = sum(vals) / len(vals) if vals else 0.0
                     records[key_name] = avg
                     last_msg = (f"recorded {key_name} = {avg.get(key_name, 0.0):.3f}"
                                 if key_name != "neutral" else "baseline recorded")
@@ -216,8 +258,9 @@ def main():
             k = cv2.waitKey(1) & 0xFF
             if k == ord('q'):
                 break
-            elif k == 27:            # ESC 跳过当前
+            elif k == 27:            # ESC 跳过当前（=未测，gain 默认 1.0，不判死）
                 last_msg = f"skipped {key_name}"
+                skipped.add(key_name)
                 buf, state = [], "prompt"
                 i += 1
             elif k == 32 and state == "prompt" and f.bs:   # SPACE 采样
@@ -225,17 +268,20 @@ def main():
                 buf = []
 
         # —— 产出 profile + 人读报告 ——
-        report = build_report(records, TARGET_DELTA)
-        prof_dict = build_profile_dict(records, TARGET_DELTA, args.source, None)
+        src_val = args.source if args.source == "phone" else int(args.source)
+        report = build_report(records, TARGET_DELTA, skipped)
+        prof_dict = build_profile_dict(records, TARGET_DELTA, src_val, None, skipped)
         if prof_dict:
-            os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+            out_dir = os.path.dirname(os.path.abspath(args.out))
+            os.makedirs(out_dir, exist_ok=True)
             profile.write_profile(args.out, prof_dict)
-            with open(os.path.join(os.path.dirname(__file__), "calibration_result.txt"),
-                      "w", encoding="utf-8") as fh:
+            report_path = os.path.join(out_dir, "calibration_result.txt")
+            with open(report_path, "w", encoding="utf-8") as fh:
                 fh.write(report + "\n\nprofile: " + args.out + "\n")
             n = sum(1 for v in prof_dict["au_gains"].values() if v is not None)
             print(report)
             print(f"\n[calibrate] profile 写入 {args.out}（{n} 个 AU 有增益）")
+            print(f"[calibrate] 报告写入 {report_path}")
             print(f"[calibrate] 用法：PYTHONUTF8=1 .venv/Scripts/python.exe main.py --profile {args.out}")
             sys.stdout.flush()
             show_report(cam_win, report, f"profile: {args.out}  (any key to close)")
@@ -246,6 +292,15 @@ def main():
     finally:
         cap.release()
         cv2.destroyAllWindows()
+        # Windows 上 cv2/mediapipe 残留线程会卡住正常退出 → 仍用 os._exit 硬退，
+        # 但保留真实退出码：异常路径打印 traceback 并以非零码退出，
+        # GUI(CalibrateRunner 的返回码)/CLI 才能感知校准中途崩溃。
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            import traceback
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+            sys.stdout.flush()
+            os._exit(1)
         os._exit(0)
 
 
