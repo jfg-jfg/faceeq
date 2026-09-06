@@ -1,0 +1,12 @@
+{
+  "name": "元气 Genki",
+  "global_gain": 1.9,
+  "emotion_gains": {
+    "happy": 1.0,
+    "angry": 0.3,
+    "sad": -0.4,
+    "surprised": 0.8,
+    "disgust": -0.4
+  },
+  "smooth": 0.35
+}

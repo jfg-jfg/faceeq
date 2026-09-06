@@ -31,8 +31,10 @@ from mediapipe.tasks.python.vision import (
     RunningMode,
 )
 
-# 默认 landmarker 模型（延迟探针已下载到这里）
-DEFAULT_TASK = os.path.join("models", "face_landmarker.task")
+from . import resource_path
+
+# 默认 landmarker 模型（源码运行在 models/；打包后在 _internal/models/）
+DEFAULT_TASK = resource_path("models", "face_landmarker.task")
 
 # ---- 手机源（iFacialMocap / MeowFace 兼容）----
 PHONE_PORT = 49983          # 生态默认 UDP 端口（MeowFace 可在 app 里改，CLI/GUI 可配）

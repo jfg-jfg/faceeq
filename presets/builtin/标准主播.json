@@ -1,0 +1,12 @@
+{
+  "name": "标准主播",
+  "global_gain": 1.6,
+  "emotion_gains": {
+    "happy": 0.8,
+    "angry": 0.4,
+    "sad": 0.3,
+    "surprised": 0.6,
+    "disgust": -0.2
+  },
+  "smooth": 0.4
+}

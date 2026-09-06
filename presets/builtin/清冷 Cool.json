@@ -1,0 +1,12 @@
+{
+  "name": "清冷 Cool",
+  "global_gain": 1.2,
+  "emotion_gains": {
+    "happy": -0.3,
+    "angry": -0.2,
+    "sad": -0.3,
+    "surprised": -0.3,
+    "disgust": -0.3
+  },
+  "smooth": 0.5
+}

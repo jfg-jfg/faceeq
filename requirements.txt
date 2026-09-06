@@ -1,11 +1,14 @@
+# FaceEQ 运行必需（产品 exe 只打包这些）
 mediapipe>=0.10.14
 opencv-python>=4.8.0
-live2d-py>=0.7.0          # Live2D Cubism Native 的 Python 绑定（v3 模型）
-glfw>=2.7                 # OpenGL 窗口/上下文
-PyOpenGL>=3.1.7
 numpy>=1.24
 websocket-client>=1.6.0   # VTS WebSocket 注入
 python-osc>=1.8.0         # VMC/OSC 输出（Warudo/VNyans 等 3D 工具）
 Pillow>=10.0.0            # 校正向导 PIL 中英文文字渲染
 PySide6>=6.6.0            # GUI 控制面板（VTS 风格）
 sounddevice>=0.4.6        # 语音情绪引擎（实验；麦克风采集，wheel 自带 PortAudio）
+
+# ── 以下仅本地开发需要（git clone 后开发/调试用），产品 exe 不包含 ──
+# live2d-py>=0.7.0        # main.py 本地 Live2D 预览（Haru）；产品预览走 VTS/目标软件
+# glfw>=2.7               # 同上
+# PyOpenGL>=3.1.7         # 同上

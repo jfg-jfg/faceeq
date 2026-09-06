@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from types import SimpleNamespace as NS
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel,
@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QPushButton, QScrollArea, QSlider, QSpinBox,
                                QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
-from faceeq import emotions, engine, profile as profile_mod
+from faceeq import emotions, engine, profile as profile_mod, resource_path
+from faceeq import __version__ as APP_VERSION
 from faceeq.capture import PHONE_PORT, list_sources, open_source
 from faceeq.hotkeys import (decide_triggers, load_trigger_config,
                             sanitize_trigger_config, save_trigger_config)
@@ -38,6 +39,7 @@ from faceeq.vts_bridge import VTSBridge
 
 DEFAULT_PROFILE = os.path.join("profiles", "calibration.json")
 PRESETS_DIR = "presets"
+BUILTIN_PRESETS_DIR = resource_path("presets", "builtin")   # 打包后在 _internal（只读）
 CUSTOM_EXPRS_FILE = "custom_expressions.json"   # 自定义复合表情定义（随仓库预置示例）
 
 
@@ -52,9 +54,21 @@ def _sanitize_preset_name(name):
 
 
 def list_presets():
-    if not os.path.isdir(PRESETS_DIR):
-        return []
-    return sorted(f[:-5] for f in os.listdir(PRESETS_DIR) if f.endswith(".json"))
+    """用户预设 + 内置预设（★ 前缀，随仓库分发，不可覆盖删除）。"""
+    user = []
+    if os.path.isdir(PRESETS_DIR):
+        user = sorted(f[:-5] for f in os.listdir(PRESETS_DIR) if f.endswith(".json"))
+    builtin = []
+    if os.path.isdir(BUILTIN_PRESETS_DIR):
+        builtin = sorted(f[:-5] for f in os.listdir(BUILTIN_PRESETS_DIR)
+                         if f.endswith(".json"))
+    return user + [f"★{n}" for n in builtin]
+
+
+def _preset_path(name):
+    if name.startswith("★"):
+        return os.path.join(BUILTIN_PRESETS_DIR, name[1:] + ".json")
+    return os.path.join(PRESETS_DIR, name + ".json")
 
 
 def save_preset(name, gain, emotion_gains, smooth, shaping=None, custom_exprs=None):
@@ -74,12 +88,14 @@ def save_preset(name, gain, emotion_gains, smooth, shaping=None, custom_exprs=No
 
 def load_preset(name):
     name = _sanitize_preset_name(name)
-    with open(os.path.join(PRESETS_DIR, name + ".json"), "r", encoding="utf-8") as f:
+    with open(_preset_path(name), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def delete_preset(name):
     name = _sanitize_preset_name(name)
+    if name.startswith("★"):
+        raise ValueError("内置预设不可删除")
     os.remove(os.path.join(PRESETS_DIR, name + ".json"))
 
 
@@ -106,9 +122,12 @@ def sanitize_custom_exprs(raw):
 
 
 def load_custom_exprs():
-    """读自定义表情定义文件（容错：文件缺失/坏 JSON → 空定义）。"""
+    """读自定义表情定义（CWD 用户副本优先；打包时回退 _internal 随包示例；容错空定义）。"""
+    path = CUSTOM_EXPRS_FILE
+    if not os.path.exists(path):
+        path = resource_path(CUSTOM_EXPRS_FILE)
     try:
-        with open(CUSTOM_EXPRS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -880,7 +899,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel("FaceEQ")
         title.setObjectName("title")
-        sub = QLabel("情绪 EQ 过滤器 · VTS 插件")
+        sub = QLabel(f"v{APP_VERSION} · 表情情绪 EQ · Live2D / 3D 跨引擎")
         sub.setObjectName("subtitle")
         root.addWidget(title)
         root.addWidget(sub)
@@ -1078,6 +1097,10 @@ class MainWindow(QMainWindow):
         self.params.set_hotkey_triggers(
             load_trigger_config(valid_emotions=emotions.EMOTIONS))
 
+        # 首启动：没有校准 profile → 弹欢迎引导（稍后自动消失于用户操作）
+        if not os.path.exists(DEFAULT_PROFILE):
+            QTimer.singleShot(500, self._first_run)
+
         # 滑块 → Params（实时）
         self.gain_slider.valueChanged.connect(lambda v: self.params.set_gain(v))
         for e, fs in self.emo_sliders.items():
@@ -1100,6 +1123,24 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setCentralWidget(scroll)
+
+    def _first_run(self):
+        """零基础引导：三步说明 + 一键进入校准（跳过也能直接开始用默认/内置预设）。"""
+        box = QMessageBox(self)
+        box.setWindowTitle("欢迎使用 FaceEQ")
+        box.setText("三步开始：\n\n"
+                    "1. 上方选输入源（摄像头，或 📱 手机 UDP）\n"
+                    "2. 选输出目标（默认 VTS；Warudo 等 3D 软件选 VMC）\n"
+                    "3. 点「校准」照提示做 11 个表情——或先跳过，直接「开始」+\n"
+                    "    预设下拉里的 ★ 内置人设试效果\n\n"
+                    "提示：VTS 里请关掉自带摄像头跟踪（Camera → None）。\n\n"
+                    "现在就校准吗？（推荐，约 2 分钟，按你的脸定制效果）")
+        cal = box.addButton("立即校准", QMessageBox.AcceptRole)
+        later = box.addButton("稍后，先随便看看", QMessageBox.RejectRole)
+        box.setDefaultButton(later)
+        box.exec()
+        if box.clickedButton() is cal:
+            self._on_calibrate()
 
     # —— 输出目标 ——
     def _on_output_kind(self, idx):
@@ -1447,6 +1488,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("先选中一个预设再删。")
             return
         name = self.preset_combo.itemText(idx)
+        if name.startswith("★"):
+            self.statusBar().showMessage("内置预设（★）不可删除；可另存为新名字修改它。")
+            return
         reply = QMessageBox.question(self, "删预设", f"删除预设「{name}」？")
         if reply != QMessageBox.StandardButton.Yes:
             return

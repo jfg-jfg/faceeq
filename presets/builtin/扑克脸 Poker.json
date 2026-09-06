@@ -1,0 +1,12 @@
+{
+  "name": "扑克脸 Poker",
+  "global_gain": 1.0,
+  "emotion_gains": {
+    "happy": -1.0,
+    "angry": -1.0,
+    "sad": -1.0,
+    "surprised": -0.8,
+    "disgust": -1.0
+  },
+  "smooth": 0.5
+}

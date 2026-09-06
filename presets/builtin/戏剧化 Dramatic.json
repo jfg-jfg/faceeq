@@ -1,0 +1,12 @@
+{
+  "name": "戏剧化 Dramatic",
+  "global_gain": 2.4,
+  "emotion_gains": {
+    "happy": 1.0,
+    "angry": 0.8,
+    "sad": 0.6,
+    "surprised": 1.0,
+    "disgust": 0.3
+  },
+  "smooth": 0.3
+}

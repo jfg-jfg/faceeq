@@ -27,7 +27,6 @@ import time
 from faceeq import emotions, engine
 from faceeq.capture import PHONE_PORT, open_source
 from faceeq.mapping import base_map
-from faceeq.render import Live2DRenderer
 
 DEFAULT_MODEL = os.path.join("models", "Resources", "v3", "Haru", "Haru.model3.json")
 DEFAULT_PROFILE = os.path.join("profiles", "calibration.json")   # 自动探测 / 首跑生成
@@ -124,6 +123,13 @@ def main():
 
     ren = None
     if not args.no_preview:
+        # 渲染器是开发预览专用（live2d-py/glfw 为 dev 依赖，产品 exe 不含）——懒导入
+        try:
+            from faceeq.render import Live2DRenderer
+        except ImportError as e:
+            print(f"[preview] 本地预览不可用（缺 dev 依赖: {e}）；"
+                  f"请用目标软件（VTS/Warudo）看效果，或 pip install live2d-py glfw PyOpenGL")
+            sys.exit(1)
         ren = Live2DRenderer(args.model,
                              title=f"FaceEQ gain={cfg.global_gain} (ESC 退出)",
                              smooth=cfg.smooth)

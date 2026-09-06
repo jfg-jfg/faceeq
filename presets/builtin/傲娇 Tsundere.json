@@ -1,0 +1,12 @@
+{
+  "name": "傲娇 Tsundere",
+  "global_gain": 1.6,
+  "emotion_gains": {
+    "happy": -0.3,
+    "angry": 0.5,
+    "sad": -0.5,
+    "surprised": 0.3,
+    "disgust": 0.2
+  },
+  "smooth": 0.4
+}

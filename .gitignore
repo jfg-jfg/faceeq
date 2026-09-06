@@ -60,3 +60,4 @@ probes/calibration_result.txt
 profiles/calibration_result.txt
 FaceEQ.zip
 dist/
+build/

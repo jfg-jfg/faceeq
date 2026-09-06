@@ -1,0 +1,12 @@
+{
+  "name": "温柔 Gentle",
+  "global_gain": 1.4,
+  "emotion_gains": {
+    "happy": 0.6,
+    "angry": -0.6,
+    "sad": 0.3,
+    "surprised": -0.2,
+    "disgust": -0.4
+  },
+  "smooth": 0.45
+}
