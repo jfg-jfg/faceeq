@@ -204,6 +204,9 @@ class PhoneCapture:
                 self._latest = parsed
                 self._last_recv = time.time()
         if self._latest is None or (time.time() - self._last_recv) > self._stale_after:
+            # 断流/未连接时空帧节流到 ~30fps：read() 非阻塞，不节流会让 GUI/CLI
+            # worker 忙循环烧 CPU（实测空转上万 fps）。
+            time.sleep(1.0 / 30)
             return Frame()
         p = self._latest
         return Frame(bs=p["bs"], rot=p["rot"], eye=p["eye"])

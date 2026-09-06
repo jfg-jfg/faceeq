@@ -90,5 +90,19 @@ ck(f"(f) 端到端有参数（{len(res.params)} 个）", len(res.params) > 0)
 ck(f"(f) sad 主导（dominant={res.dominant}）", res.dominant == "sad")
 ck(f"(f) bs_params 同步产出（{len(res.bs_params)} 形状，VMC 输出空间）", len(res.bs_params) >= 20)
 
+# (g) 断流节流：无数据时 read() 出空帧且带 ~30fps 节流（防 GUI/CLI worker 忙循环烧 CPU）
+import time as _t
+
+from faceeq.capture import PhoneCapture
+
+cap = PhoneCapture()
+cap._next_handshake = float("inf")   # 冒烟不发局域网发现广播
+t0 = _t.perf_counter()
+fr = cap.read()
+dt = _t.perf_counter() - t0
+ck("(g) 断流 read()→空帧", not fr.bs and fr.rot is None and fr.eye is None)
+ck(f"(g) 断流 read() 节流 ≥20ms (dt={dt * 1000:.0f}ms)", dt >= 0.02)
+cap.release()
+
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}"))
 sys.exit(1 if failures else 0)

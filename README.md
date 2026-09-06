@@ -59,6 +59,7 @@ CLI（自动化/调试）保留：`main.py --output vts|vmc|osc --phone` 等，�
 ## 文档
 
 - [快速上手（小白版）](docs/quickstart.md) / [English quickstart](README_EN.md)
+- [FAQ / 排错](docs/faq.md) —— 杀软误报、VTS/VMC 对接、sad/disgust 等
 - [输出目标：VTS / VMC / OSC](docs/outputs.md) —— 对接 Warudo/VNyans/VRChat 等
 - [校准与 profile](docs/calibration.md) · [手机面捕](docs/phone-tracking.md) · [VTS 接入](docs/vts-setup.md)
 - [产品定位（竞品对照）](docs/positioning.md) · [发布清单](RELEASE.md) · [架构](ARCHITECTURE.md)

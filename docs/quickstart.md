@@ -105,6 +105,7 @@ FaceEQ 会自动在 VTS 里创建自定义参数（如 `faceeqEyeSmile`、`facee
 
 ## 还需要帮助？
 
+- 📖 [FAQ / 排错](faq.md)（杀软误报、连不上、表情不动等）
 - 📖 [完整校准指南](calibration.md)
 - 📖 [VTS 接入详细指南](vts-setup.md)
 - 📖 [项目架构文档](../ARCHITECTURE.md)

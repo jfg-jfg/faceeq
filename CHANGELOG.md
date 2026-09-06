@@ -2,7 +2,7 @@
 
 所有重要变更记录于此。格式参考 Keep a Changelog；版本遵循语义化（首发从 0.1.0 起）。
 
-## [0.1.0] — 2026-09-06
+## [0.1.0] — 2026-09-07
 
 首个公开版本。
 
@@ -30,7 +30,11 @@
 - PyInstaller onedir 打包（`probes/build_release.py`），免 Python 运行；
 - 冻结感知资源路径（模型/内置预设随包定位）。
 
+### 修复
+- 手机面捕断流/未连接时 worker 忙循环烧 CPU（实测空转上万 fps、FPS 显示异常）——
+  断流空帧路径加 ~30fps 节流（`probes/phone_smoke.py` 新增回归断言）。
+
 ### 已知限制
 - 普通摄像头下 sad/disgust 不可用（RGB 对细微 AU 物理性欠读）——用手机面捕路线；
 - 模型 rig 是表情上限；VTS 侧需关掉自带摄像头跟踪；
-- 打包体积 ~380MB（mediapipe）。
+- 打包体积 ~340MB（mediapipe，已裁剪不用的 Qt 组件）。
