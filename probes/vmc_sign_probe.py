@@ -14,6 +14,7 @@ VSeeFace/Warudo 等 PC 追踪软件做「好 RGB 能否读到 sad/disgust」的 
 Ctrl+C 退出。
 """
 import argparse
+import math
 import os
 import sys
 import threading
@@ -33,12 +34,31 @@ HEADER = """━━━ VMC 输入验收探针 ━━━━━━━━━━━�
 
 bs_lock = threading.Lock()
 bs: dict = {}
+rot = (0.0, 0.0, 0.0)   # (yaw, pitch, roll) 度,由 /VMC/ext/face/pos 四元数解码
 last_apply = 0.0
 
 
 def on_blend_val(_addr, name: str, weight: float):
     with bs_lock:
         bs[str(name)] = float(weight)
+
+
+def on_face_pos(_addr, *vals):
+    """/VMC/ext/face/pos <px,py,pz> <qx,qy,qz,qw> → 欧拉角(度)。
+    YXZ 提取(Unity 系惯例),符号仅供验收参考。"""
+    global rot
+    try:
+        qx, qy, qz, qw = (float(v) for v in vals[3:7])
+    except (ValueError, IndexError):
+        return
+    yaw = math.degrees(math.atan2(2 * (qw * qy + qx * qz),
+                                  1 - 2 * (qy * qy + qz * qz)))
+    t = max(-1.0, min(1.0, 2 * (qw * qx - qy * qz)))
+    pitch = math.degrees(math.asin(t))
+    roll = math.degrees(math.atan2(2 * (qw * qz + qx * qy),
+                                   1 - 2 * (qx * qx + qy * qy)))
+    with bs_lock:
+        rot = (yaw, pitch, roll)
 
 
 def on_apply(_addr):
@@ -62,6 +82,7 @@ def main():
     disp = dispatcher.Dispatcher()
     disp.map("/VMC/ext/blend/val", on_blend_val)
     disp.map("/VMC/ext/blend/apply", on_apply)
+    disp.map("/VMC/ext/face/pos", on_face_pos)
     server = osc_server.ThreadingOSCUDPServer(("127.0.0.1", args.port), disp)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -74,7 +95,9 @@ def main():
                 print(f"…等 VMC 数据（{'已连但 ' + format(idle, '.0f') + 's 无 apply' if snap else '未收到'}）", end="\r")
             else:
                 emo = emotions.signals(snap)
-                line = (f"browIn{g(snap, 'browInnerUp'):.2f} browDn{g(snap, 'browDownLeft', 'browDownRight'):.2f} "
+                yaw, pitch, roll = rot
+                line = (f"yaw{yaw:+7.1f} pitch{pitch:+7.1f} roll{roll:+7.1f} | "
+                        f"browIn{g(snap, 'browInnerUp'):.2f} browDn{g(snap, 'browDownLeft', 'browDownRight'):.2f} "
                         f"frown{g(snap, 'mouthFrownLeft', 'mouthFrownRight'):.2f} "
                         f"sneer{g(snap, 'noseSneerLeft', 'noseSneerRight'):.2f} "
                         f"jaw{g(snap, 'jawOpen'):.2f} smile{g(snap, 'mouthSmileLeft', 'mouthSmileRight'):.2f} | "
