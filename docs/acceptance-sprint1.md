@@ -55,6 +55,18 @@ yaw  +20.0 pitch  -12.5 roll   +4.0 | eyeX-0.04/+0.06 eyeY-0.15/-0.15 | browIn0.
 | C3 | **皱鼻 + 抬上唇**(厌恶脸) | sneer↑,disg↑? | sneer ____ disg ____ |
 | C4 | 微笑(对照) | smile↑,happy↑ | smile ____ happy ____ |
 
+### 替代路径:PC 摄像头(VSeeFace/Warudo 发 VMC)
+
+没有 iFacialMocap 时,可用 PC 追踪软件测「好 RGB」的读数(顺带预演 v0.2.0 主打路径):
+
+```
+PYTHONUTF8=1 .venv\Scripts\python.exe -u probes\vmc_sign_probe.py
+```
+
+发送端开 VMC 发送,地址 `127.0.0.1`、端口 `39539`。注意:完整 52 形状
+(noseSneer/mouthFrown 等)通常需要 **Perfect Sync 模型**,否则值可能稀疏。
+探针指标与手机探针相同,峰值填进上表即可(标注来源设备)。
+
 ## D.(可选,强烈建议)VTS 端到端
 
 关掉探针 → 开 FaceEQ GUI(`gui.py`,输入源选「📱 手机 UDP」)→ 连 VTS:
