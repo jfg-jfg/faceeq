@@ -1,5 +1,10 @@
 # 冲刺①验收卡:手机/平板面捕方向符号 + TrueDepth 实测
 
+> **✅ 已完成(2026-09-07,iPad TrueDepth + Facemotion 离线录制路线)。**
+> 方法:app 录制受控表情 → 导出 FBX → `probes/fbx_peaks.py`/分析脚本提取 52 形状曲线
+> → 采样表情时刻跑 `emotions.signals` 得 FaceEQ 真实估计。结果见文末「验收结果」。
+> 以下原始流程留档。
+
 > 目的:钉死 `faceeq/capture.py` 里 `_ROT_SIGN/_EYE_SIGN` 两组猜测符号(现在的值全是 +1,
 > 从未拿真机验过),并实测 TrueDepth 下 sad/disgust 的真实读数——这决定 v0.2.0 的宣传口径。
 > 预计 10 分钟。
@@ -77,3 +82,24 @@ PYTHONUTF8=1 .venv\Scripts\python.exe -u probes\vmc_sign_probe.py
 把 A1–B4 的符号、C1–C4 的峰值抄给我(拍照/打字都行)。我来判定:
 - 哪几个符号要翻 → 改 `_ROT_SIGN/_EYE_SIGN`,smoke 补对应断言;
 - C1–C3 峰值 ≥0.3 → 宣传语保留「TrueDepth 读到 sad/disgust」;<0.1 → 口径改保守,并考虑调 signals 权重。
+
+---
+
+## 验收结果(2026-09-07, iPad TrueDepth, 离线 FBX 路线)
+
+用 FaceEQ 自身 `emotions.signals` 对录制时刻采样(52 形状全量):
+
+| 表情 | 关键形状读数 | FaceEQ 估计 | 结论 |
+|---|---|---|---|
+| **撇嘴**(sad) | mouthFrown 0.58/0.64 | **sad=0.82 主导** | ✅ **sad 复活确认**(webcam 上判死) |
+| **皱鼻**(disgust) | noseSneer 0.90/0.92 | disgust=0.64(anger 0.88 竞争主导) | ✅ 可读;⚠️ 皱鼻伴随皱眉 → angry 竞争,列 signals 调权 |
+| **微笑**(happy) | mouthSmile 0.88 + squint | **happy=1.00 主导** | ✅ |
+| 眼球四向 | eyeLookOut/In/Up/Down 峰值 91/84/76/67 | — | ✅ 语义标准(ARKit),灵敏度高 |
+| 头部六向 | 受控段无旋转曲线(iPad 手持,头与摄像头同动) | — | ⏳ 未测:需设备固定后补录,或 MeowFace/正版实时流 |
+| 静止基线 | browDown≈1.0(习惯性皱眉) | sad 0.29 残留 | ℹ️ 正是「每脸校准」要解的 neutral 扣除场景 |
+
+**决定**:
+1. 宣传口径成立:「TrueDepth 下 sad/disgust 实测可用(撇嘴 sad 0.82、皱鼻 disgust 0.64)」;
+2. 冲刺②新增:signals 调权——sneer 高时压制 browDown 对 angry 的贡献(disgust 抢回主导);
+3. 文档新增注意项:面捕设备需固定(支架);手持时头转不映射(相对坐标特性);
+4. A 段符号(低优先级):设备固定后补录,或等 MeowFace/正版 iFacialMocap 实时流做绑定验收。
