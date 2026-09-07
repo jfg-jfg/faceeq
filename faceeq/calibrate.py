@@ -3,9 +3,8 @@
 
 FaceEQ 上手的核心（"简简单单上手"）：把 per-AU 欠读补偿从硬编码 → 你这张脸的实测值。
 
-UI 演进：①早期 Live2D Haru 示范（精度不够：browIn/browUp 同参、press/sneer 无参、形变粗）
-→ ②cv2 自绘方向箭头（仍不够直观）→ ③现用 **PIL 渲染的中英文文字提示**（最明确）。单 cv2 窗：
-左摄像头 + 右文字面板（PIL+中文字体，cv2 本身渲染不了中文）。
+UI：**PIL 渲染的中英文文字提示**（左状态区 + 右提示面板，tkinter 窗口）。
+v0.2.0 起不再依赖 cv2（省 138MB 打包体积）。
 
 用法：
     PYTHONUTF8=1 .venv/Scripts/python.exe probes/calibrate.py
@@ -18,11 +17,9 @@ import argparse
 import datetime
 import os
 import sys
+import tkinter as tk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import cv2
-import numpy as np
 
 from faceeq import emotions, profile
 from faceeq.inputs.phone import PHONE_PORT
@@ -46,9 +43,6 @@ POSES = [
 CAPTURE_FRAMES = 30
 TARGET_DELTA = 0.5
 DEAD_DELTA = 0.05
-GREEN, YELLOW, WHITE, GRAY = (80, 220, 80), (0, 220, 220), (235, 235, 235), (150, 150, 150)
-PANEL_W, PANEL_H = 380, 480
-
 # 中文字体（跨平台候选；首个存在的用）。⚠️ 无中文字体的系统会退化为 PIL 默认字体（中文显示不出）。
 _FONT_CANDIDATES = [
     "C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
@@ -66,20 +60,6 @@ def _font(size):
         except Exception:
             pass
     return ImageFont.load_default()
-
-
-def _prompt_panel(zh_title, zh_desc, en_desc):
-    """PIL 渲染中英文提示面板 → numpy(BGR) 供 cv2 显示。"""
-    from PIL import Image, ImageDraw
-    pil = Image.new("RGB", (PANEL_W, PANEL_H), (0, 0, 0))
-    d = ImageDraw.Draw(pil)
-    d.text((18, 28), zh_title, font=_font(36), fill=GREEN)
-    d.text((18, 110), "做这个表情：", font=_font(24), fill=GRAY)
-    d.text((18, 150), zh_desc, font=_font(40), fill=WHITE)
-    d.text((18, 235), en_desc, font=_font(22), fill=YELLOW)
-    d.text((18, PANEL_H - 110), "保持住表情", font=_font(26), fill=(220, 220, 220))
-    d.text((18, PANEL_H - 60), "→ 按 SPACE 采样", font=_font(24), fill=GRAY)
-    return np.array(pil)[:, :, ::-1].copy()   # RGB→BGR
 
 
 def build_profile_dict(records, target_delta, source, demographic, skipped=()):
@@ -157,32 +137,161 @@ def build_report(records, target_delta, skipped=()):
     return "\n".join(lines)
 
 
-def show_report(win, report, hint):
-    lines = report.split("\n")
-    img = np.zeros((max(480, 30 * len(lines) + 50), 860, 3), dtype="uint8")
-    for i, ln in enumerate(lines):
-        cv2.putText(img, ln[:100], (12, 30 + i * 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, GREEN if i < 3 else WHITE, 1, cv2.LINE_AA)
-    cv2.putText(img, hint, (12, img.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX,
-                0.45, GRAY, 1, cv2.LINE_AA)
-    cv2.imshow(win, img)
-    cv2.waitKey(0)
+class _Wizard:
+    """tkinter 校准向导：左状态区（进度/live 值/消息）+ 右 PIL 中英文提示面板。
 
+    事件驱动（root.after 30ms tick）：prompt 态显示 live 值，capturing 态按 tick
+    采 CAPTURE_FRAMES 帧取均值。按键：SPACE 采样 / ESC 跳过 / q 退出。
+    """
 
-def _phone_canvas(f):
-    """手机源无摄像头画面 → 黑底状态画布，保持校准窗口布局可用。"""
-    img = np.zeros((240, 320, 3), dtype="uint8")
-    cv2.putText(img, "PHONE SOURCE (UDP)", (14, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, GREEN, 2, cv2.LINE_AA)
-    if f.bs:
-        cv2.putText(img, "receiving ...", (14, 120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 1, cv2.LINE_AA)
-    else:
-        cv2.putText(img, "waiting for data ...", (14, 120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 1, cv2.LINE_AA)
-        cv2.putText(img, "check app IP / firewall", (14, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, GRAY, 1, cv2.LINE_AA)
-    return img
+    def __init__(self, root, cap, poses, panel_w=380, panel_h=480):
+        from PIL import Image, ImageTk
+        self._Image, self._ImageTk = Image, ImageTk
+        self.root = root
+        self.cap = cap
+        self.poses = poses
+        self.panel_w, self.panel_h = panel_w, panel_h
+        self.records, self.skipped = {}, set()
+        self.i, self.state, self.buf = 0, "prompt", []
+        self.last_msg = ""
+        self.rc = 0
+        self.out_path = os.path.join("profiles", "calibration.json")
+        self._frame_bs = {}
+
+        root.title("FaceEQ calibrate (SPACE=采样 / ESC=跳过 / q=退出)")
+        left = tk.Frame(root, width=340, height=panel_h, bg="#101010")
+        left.pack(side="left", fill="y")
+        self._v_progress = self._lbl(left, 22, "#50dc50", 16)
+        self._v_recv = self._lbl(left, 64, "#50dc50", 12)
+        self._v_live = self._lbl(left, 96, "#ebebeb", 13)
+        self._v_msg = self._lbl(left, 180, "#dcdcdc", 12)
+        self._canvas = tk.Label(root, bg="#000000")
+        self._canvas.pack(side="right", fill="both", expand=True)
+
+        for seq, fn in (("<space>", self._capture), ("<Escape>", self._skip),
+                        ("<KeyPress-q>", self._quit)):
+            root.bind(seq, fn)
+        root.focus_force()
+        self._set_panel(0)
+        root.after(30, self._tick)
+
+    def _lbl(self, parent, y, color, size):
+        return tk.Label(parent, bg="#101010", fg=color, font=("Microsoft YaHei", size),
+                        anchor="w", justify="left", wraplength=320)
+
+    def _place(self, w, y):
+        w.place(x=14, y=y, width=310)
+
+    # —— 右侧 PIL 提示面板 ——
+    def _set_panel(self, idx):
+        from PIL import Image, ImageDraw
+        zh_title, zh_desc, en_desc = self.poses[idx][1:]
+        img = self._Image.new("RGB", (self.panel_w, self.panel_h), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        W, H = self.panel_w, self.panel_h
+        d.text((18, 28), zh_title, font=_font(36), fill=(80, 220, 80))
+        d.text((18, 110), "做这个表情：", font=_font(24), fill=(150, 150, 150))
+        d.text((18, 150), zh_desc, font=_font(40), fill=(235, 235, 235))
+        d.text((18, 235), en_desc, font=_font(22), fill=(0, 220, 220))
+        d.text((18, H - 110), "保持住表情", font=_font(26), fill=(220, 220, 220))
+        d.text((18, H - 60), "→ 按 SPACE 采样", font=_font(24), fill=(150, 150, 150))
+        self._photo = self._ImageTk.PhotoImage(img)
+        self._canvas.configure(image=self._photo)
+
+    def _set_panel_text(self, lines, hint):
+        from PIL import Image, ImageDraw
+        H = max(self.panel_h, 26 * len(lines) + 60)
+        img = self._Image.new("RGB", (760, H), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        for i, ln in enumerate(lines):
+            d.text((12, 24 + i * 26), ln[:96], font=_font(15),
+                   fill=(80, 220, 80) if i < 3 else (235, 235, 235))
+        d.text((12, H - 40), hint, font=_font(14), fill=(150, 150, 150))
+        self._photo = self._ImageTk.PhotoImage(img)
+        self._canvas.configure(image=self._photo)
+
+    def _capture(self, _e=None):
+        if self.state == "prompt" and self._frame_bs:
+            self.state = "capturing"
+            self.buf = []
+
+    def _skip(self, _e=None):
+        if self.i < len(self.poses):
+            self.last_msg = "skipped " + self.poses[self.i][0]
+            self.skipped.add(self.poses[self.i][0])
+            self.buf, self.state = [], "prompt"
+            self.i += 1
+            if self.i < len(self.poses):
+                self._set_panel(self.i)
+
+    def _quit(self, _e=None):
+        self.root.destroy()
+
+    def _tick(self):
+        try:
+            f = self.cap.read()
+            self._frame_bs = f.bs
+            key_name = self.poses[self.i][0] if self.i < len(self.poses) else None
+            raw = emotions.signals_with_raw(f.bs)[1] if f.bs else {}
+            self._v_progress.configure(text="[{}/{}] {}".format(
+                self.i + 1, len(self.poses), key_name.upper() if key_name else "DONE"))
+            self._v_recv.configure(text="receiving ..." if f.bs
+                                   else "waiting for data ... (check app IP / firewall)")
+            if key_name and key_name != "neutral":
+                self._v_live.configure(text="live {} = {:.3f}".format(key_name, raw.get(key_name, 0.0)))
+            else:
+                self._v_live.configure(text="")
+            if self.state == "capturing":
+                if f.bs:
+                    self.buf.append(raw)
+                self._v_msg.configure(text="CAPTURING {}/{} ... hold steady".format(
+                    len(self.buf), CAPTURE_FRAMES))
+                if len(self.buf) >= CAPTURE_FRAMES:
+                    avg = {}
+                    for kk in self.buf[0]:
+                        vals = [d[kk] for d in self.buf if kk in d]
+                        avg[kk] = sum(vals) / len(vals) if vals else 0.0
+                    self.records[key_name] = avg
+                    self.last_msg = ("baseline recorded" if key_name == "neutral"
+                                     else "recorded {} = {:.3f}".format(key_name, avg.get(key_name, 0.0)))
+                    self.buf, self.state = [], "prompt"
+                    self.i += 1
+                    if self.i < len(self.poses):
+                        self._set_panel(self.i)
+            else:
+                self._v_msg.configure(text=self.last_msg)
+            if self.i < len(self.poses):
+                self.root.after(30, self._tick)
+            else:
+                self._finish()
+        except Exception:
+            self.rc = 1
+            import traceback
+            traceback.print_exc()
+            self.root.destroy()
+
+    def _finish(self):
+        report = build_report(self.records, TARGET_DELTA, self.skipped)
+        prof_dict = build_profile_dict(self.records, TARGET_DELTA,
+                                       self.cap.label, None, self.skipped)
+        lines = report.split("\n")
+        if prof_dict:
+            out_dir = os.path.dirname(os.path.abspath(self.out_path))
+            os.makedirs(out_dir, exist_ok=True)
+            profile.write_profile(self.out_path, prof_dict)
+            report_path = os.path.join(out_dir, "calibration_result.txt")
+            with open(report_path, "w", encoding="utf-8") as fh:
+                fh.write(report + "\n\nprofile: " + self.out_path + "\n")
+            print(report)
+            print("\n[calibrate] profile 写入 " + self.out_path)
+            print("[calibrate] 报告写入 " + report_path)
+            hint = "profile: " + self.out_path + "  (按任意键/q 关闭)"
+        else:
+            print(report)
+            hint = "(no profile written; 按任意键关闭)"
+        self._set_panel_text(lines, hint)
+        self.root.bind("<Any-KeyPress>", lambda _e: self.root.destroy())
+        self.root.bind("<Button-1>", lambda _e: self.root.destroy())
 
 
 def main():
@@ -200,114 +309,19 @@ def main():
     kw = {"port": args.phone_port if args.source == "phone" else args.vmc_port}
     cap = create_input(args.source, **kw)
     cap.start()
-    cam_win = "FaceEQ calibrate (SPACE=capture / ESC=skip / q=quit)"
-    cv2.namedWindow(cam_win, cv2.WINDOW_AUTOSIZE)
-    if args.source == "phone":
-        print("手机源：在手机 app（iFacialMocap/MeowFace）里填本机 IP 与端口后开始发送；"
-              "无摄像头画面预览，黑底画布显示收流状态。")
     print("看右侧中英文提示 + 左侧 live 值，保持表情后按 SPACE 采样。")
 
-    records = {}
-    skipped = set()      # ESC 跳过的 pose 键（不判死，写默认增益 1.0）
-    i = 0
-    state = "prompt"     # prompt | capturing
-    buf = []
-    last_msg = ""
-    panel = _prompt_panel(*POSES[0][1:])
-
+    rc = 0
     try:
-        while i < len(POSES):
-            f = cap.read()
-            img = f.img
-            if img is None:
-                img = _phone_canvas(f)   # 手机源：无摄像头画面 → 状态画布
-            key_name, zh_title, zh_desc, en_desc = POSES[i]
-            raw = emotions.signals_with_raw(f.bs)[1] if f.bs else {}
-            panel = _prompt_panel(zh_title, zh_desc, en_desc)
-
-            # 顶部信息条（摄像头画面上）
-            ov = img.copy()
-            cv2.rectangle(ov, (0, 0), (img.shape[1], 60), (0, 0, 0), -1)
-            cv2.addWeighted(ov, 0.6, img, 0.4, 0, img)
-            cv2.putText(img, f"[{i+1}/{len(POSES)}] {key_name.upper()}", (10, 34),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, GREEN, 2, cv2.LINE_AA)
-            if state == "prompt":
-                if last_msg:
-                    cv2.putText(img, last_msg, (10, img.shape[0] - 16),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, YELLOW, 1, cv2.LINE_AA)
-            else:  # capturing
-                if f.bs:
-                    buf.append(raw)
-                cv2.putText(img, f"CAPTURING {len(buf)}/{CAPTURE_FRAMES} ... hold steady",
-                            (10, img.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, YELLOW, 2, cv2.LINE_AA)
-                if len(buf) >= CAPTURE_FRAMES:
-                    # 按键取有效帧平均：某键个别帧缺失时不以 0.0 稀释均值
-                    avg = {}
-                    for kk in buf[0]:
-                        vals = [d[kk] for d in buf if kk in d]
-                        avg[kk] = sum(vals) / len(vals) if vals else 0.0
-                    records[key_name] = avg
-                    last_msg = (f"recorded {key_name} = {avg.get(key_name, 0.0):.3f}"
-                                if key_name != "neutral" else "baseline recorded")
-                    buf, state = [], "prompt"
-                    i += 1
-                    continue
-            if key_name != "neutral" and key_name in raw:
-                cv2.putText(img, f"live {key_name} = {raw[key_name]:.3f}",
-                            (img.shape[1] - 270, 34),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, WHITE, 1, cv2.LINE_AA)
-
-            canvas = np.hstack([img, panel])  # 左摄像头 + 右中英文提示，单窗
-            cv2.imshow(cam_win, canvas)
-            k = cv2.waitKey(1) & 0xFF
-            if k == ord('q'):
-                break
-            elif k == 27:            # ESC 跳过当前（=未测，gain 默认 1.0，不判死）
-                last_msg = f"skipped {key_name}"
-                skipped.add(key_name)
-                buf, state = [], "prompt"
-                i += 1
-            elif k == 32 and state == "prompt" and f.bs:   # SPACE 采样
-                state = "capturing"
-                buf = []
-
-        # —— 产出 profile + 人读报告 ——
-        src_val = args.source if args.source == "phone" else int(args.source)
-        report = build_report(records, TARGET_DELTA, skipped)
-        prof_dict = build_profile_dict(records, TARGET_DELTA, src_val, None, skipped)
-        if prof_dict:
-            out_dir = os.path.dirname(os.path.abspath(args.out))
-            os.makedirs(out_dir, exist_ok=True)
-            profile.write_profile(args.out, prof_dict)
-            report_path = os.path.join(out_dir, "calibration_result.txt")
-            with open(report_path, "w", encoding="utf-8") as fh:
-                fh.write(report + "\n\nprofile: " + args.out + "\n")
-            n = sum(1 for v in prof_dict["au_gains"].values() if v is not None)
-            print(report)
-            print(f"\n[calibrate] profile 写入 {args.out}（{n} 个 AU 有增益）")
-            print(f"[calibrate] 报告写入 {report_path}")
-            print(f"[calibrate] 用法：PYTHONUTF8=1 .venv/Scripts/python.exe main.py --profile {args.out}")
-            sys.stdout.flush()
-            show_report(cam_win, report, f"profile: {args.out}  (any key to close)")
-        else:
-            print(report)
-            sys.stdout.flush()
-            show_report(cam_win, report, "(no profile written; any key to close)")
+        root = tk.Tk()
+        wiz = _Wizard(root, cap, POSES)
+        wiz.out_path = args.out
+        root.mainloop()
+        rc = wiz.rc
     finally:
         cap.release()
-        cv2.destroyAllWindows()
-        # Windows 上 cv2/mediapipe 残留线程会卡住正常退出 → 仍用 os._exit 硬退，
-        # 但保留真实退出码：异常路径打印 traceback 并以非零码退出，
-        # GUI(CalibrateRunner 的返回码)/CLI 才能感知校准中途崩溃。
-        exc = sys.exc_info()[1]
-        if exc is not None:
-            import traceback
-            traceback.print_exception(type(exc), exc, exc.__traceback__)
-            sys.stdout.flush()
-            os._exit(1)
-        os._exit(0)
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

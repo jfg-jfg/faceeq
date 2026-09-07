@@ -5,7 +5,6 @@ Pillow>=10.0.0            # 校正向导 PIL 中英文文字渲染
 PySide6>=6.6.0            # GUI 控制面板（VTS 风格）
 sounddevice>=0.4.6        # 语音情绪引擎（实验；麦克风采集，wheel 自带 PortAudio）
 numpy>=1.24               # sounddevice PCM → float32（voice.py）
-opencv-python>=4.8.0      # 校正向导 cv2 窗口（faceeq/calibrate.py）
 
 # ── 以下仅本地开发需要（git clone 后开发/调试用），产品 exe 不包含 ──
 # live2d-py>=0.7.0        # （已删 render.py 预览，保留供历史参考）

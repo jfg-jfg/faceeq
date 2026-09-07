@@ -4,11 +4,11 @@
     .venv/Scripts/python.exe -m pip install pyinstaller
     .venv/Scripts/python.exe probes/build_release.py
 
-产物: dist/FaceEQ/（绿色目录：FaceEQ.exe + 依赖 + models + 内置预设）
+产物: dist/FaceEQ/（绿色目录：FaceEQ.exe + 依赖 + 内置预设）
       分发 = 把 dist/FaceEQ 整个目录打 zip。
 说明:
 - 只含 core 依赖（无 live2d-py/glfw——本地 Live2D 预览是开发特性，产品预览走 VTS/目标软件）。
-- mediapipe 带大量数据文件，用 --collect-all 兜底；单文件(onefile)模式已知易碎，勿改 onefile。
+- v0.2.0 纯协议化：无 mediapipe/模型文件；单文件(onefile)模式已知易碎，勿改 onefile。
 """
 import os
 import shutil
@@ -34,18 +34,17 @@ def main():
             shutil.rmtree(d, ignore_errors=True)
 
     datas = [
-        (os.path.join("models", "face_landmarker.task"), "models"),
         (os.path.join("custom_expressions.json"), "."),
         (os.path.join("presets", "builtin"), os.path.join("presets", "builtin")),
     ]
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
            "--name", NAME, "--windowed", "--onedir"]
-    for src, dst in datas:
-        if os.path.exists(src):
-            cmd += ["--add-data", f"{src}{SEP}{dst}"]
+    for s, dst in datas:
+        if os.path.exists(s):
+            cmd += ["--add-data", f"{s}{SEP}{dst}"]
         else:
-            print(f"[build] ⚠ 缺数据文件 {src}（不影响打包，运行时会缺该功能）")
-    for pkg in ("mediapipe", "sounddevice"):
+            print(f"[build] ⚠ 缺数据文件 {s}（不影响打包，运行时会缺该功能）")
+    for pkg in ("sounddevice",):
         cmd += ["--collect-all", pkg]
     cmd.append(os.path.join("gui.py"))
     print("[build]", " ".join(cmd))
@@ -66,6 +65,7 @@ def main():
         os.path.join(internal, "PySide6", "Qt6Qml.dll"),
         os.path.join(internal, "PySide6", "Qt6Pdf.dll"),
         os.path.join(internal, "PySide6", "translations"),
+        os.path.join(internal, "matplotlib"),                   # mediapipe 出库后无人用
     ]
     for p in prune_items:
         if os.path.isdir(p):
