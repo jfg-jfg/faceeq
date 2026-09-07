@@ -1,7 +1,7 @@
 # 输出目标（多软件支持）
 
 FaceEQ 的价值在 EQ 层（情绪差异化放大/抑制 + 耦合 + 自定义表情），输出目标可插拔。
-当前支持三种输出，GUI 顶部「输出目标」下拉切换：
+当前支持三种输出，GUI「输出目标」区**勾选启用（可多选并发）**：
 
 | 输出 | 适用软件 | 通道内容 | 默认端口 |
 |---|---|---|---|
@@ -9,7 +9,9 @@ FaceEQ 的价值在 EQ 层（情绪差异化放大/抑制 + 耦合 + 自定义�
 | **VMC** | Warudo、VNyan、VSeeFace、VMC、支持 VMC 的 VRM/Unity/UE 工具 | 放大后的 ARKit 52 blendshape（OSC/UDP） | 39540 |
 | **OSC 自定义** | VRChat（经 FT 桥）、任何 OSC 接收器 | 放大后的 blendshape，地址可配 | 9000 |
 
-输出目标与输入源（摄像头 / 手机 UDP）自由组合——**手机面捕 → VMC → Warudo** 是 3D 主打链路。
+输出目标与输入源（📱 手机/平板 UDP / 📡 VMC 输入）自由组合——**手机面捕 → VMC → Warudo**
+是 3D 主打链路；**VSeeFace → VMC 输入 → FaceEQ → VTS+VMC 并发**是 v0.2.0 的新玩法。
+输入源说明见 [phone-tracking.md](phone-tracking.md)。
 
 ## VMC 输出（3D 工具通用）
 
@@ -46,6 +48,11 @@ FaceEQ 的价值在 EQ 层（情绪差异化放大/抑制 + 耦合 + 自定义�
 
 行为同此前版本：WebSocket 连接 + token 鉴权 + 默认参数/自定义参数注入。
 详见 [vts-setup.md](vts-setup.md)。
+
+## 多输出并发
+
+输出目标勾选几个就同时发几个（如 VTS+VMC 同时喂 Live2D 和 3D 形象）。
+某个目标断线只停用它自己（状态栏提示），其他输出不受影响；停止后重开「开始」可重试。
 
 ## 排错
 

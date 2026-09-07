@@ -6,8 +6,12 @@ FaceEQ 支持用手机 app 代替摄像头做面捕。普通 RGB 摄像头对细
 VTS 摄像头冲突（1fps 问题）随之消失。
 
 支持两个 app（同一套 UDP 协议，FaceEQ 做接收端）：
-- **iFacialMocap**（iOS，App Store 付费）——需 iPhone X 及以上（TrueDepth）。
-- **MeowFace**（Android，免费）——兼容 iFacialMocap 协议。
+- **iFacialMocap**（iOS/iPadOS，App Store 付费）——需 TrueDepth 设备（iPhone X+、
+  2018 款后 Face ID iPad Pro）。⚠️ App Store 搜「iFacialMocap」认准开发者 shirajuki，
+  有同名仿制 app（开发者 DevelopW LLC）不兼容。
+- **MeowFace**（Android，免费）——兼容 iFacialMocap 协议（无深度，细微 AU 偏弱）。
+
+另有 📡 **VMC 输入**可接 PC 追踪软件（VSeeFace/Warudo），见 [outputs.md](outputs.md)。
 
 ## 设置步骤
 
@@ -48,8 +52,12 @@ PYTHONUTF8=1 .venv/Scripts/python.exe main.py --phone --phone-port 49983
 - **VTS 摄像头跟踪仍要保持关闭**：FaceEQ 注入是 set 模式会覆盖 VTS 自带跟踪，两边同写会打架。
 - **eyeWide**：iFacialMocap/MeowFace 有独立 eyeWide 通道（webcam 检测器只能估），
   surprised 的表现通常比 webcam 好。
-- **sad / disgust**：TrueDepth 下 AU15（嘴角下垂）/ AU1（内眉抬）/ AU9（皱鼻）可读，
-  这两个情绪预期从「判死」变「可用」——以你的实测校准为准（校准报告里 delta>0.05 即活）。
+- **sad / disgust**：TrueDepth 下 AU15（嘴角下垂）/ AU1（内眉抬）/ AU9（皱鼻）可读——
+  **v0.2.0 iPad 实测：撇嘴 sad=0.82、皱鼻 disgust=0.64（FaceEQ 实时估计）**，
+  完整数据见 [acceptance-sprint1.md](acceptance-sprint1.md)。安卓 MeowFace 无深度，
+  以校准实测为准（校准报告里 delta>0.05 即活）。
+- **设备请固定**（支架/架稳）：头旋转是相对摄像头的——手持设备时头和设备一起动，
+  头转不映射到模型（app 有头旋转数据时才生效）。
 - **方向不对？**（转头方向/眼球方向反了）：轴与符号集中定义在
   `faceeq/capture.py` 的 `_ROT_SIGN` / `_EYE_SIGN`，改这两个元组即可，别动解析逻辑。
 - 首选 5GHz WiFi 或 USB 网络共享，延迟更低；抖动由 FaceEQ 的 EMA 平滑兜底（可调 smooth）。

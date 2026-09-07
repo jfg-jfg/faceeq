@@ -2,110 +2,80 @@
 
 ## FaceEQ 是什么？
 
-FaceEQ 是一个 VTube Studio 插件，能**放大你的面部表情**——让你的 VTuber 小人表情更夸张、更好认。
-就像给表情加了一个「均衡器」(EQ)，你可以单独调每个情绪的增强/抑制。
+FaceEQ 是一个**表情「情绪 EQ」中间件**：把你面捕软件追踪到的表情，按情绪**差异化放大/抑制**
+——让角色表情更夸张、更好认，或按人设压平某些情绪。就像给表情加了一个「均衡器」(EQ)。
+
+它**自己不做面捕**：你先有一个面捕源（手机/平板 app，或 PC 追踪软件），FaceEQ 吃它的数据、
+吐出「调过音」的表情给你的形象软件（VTube Studio / Warudo 等）。
 
 **你需要准备：**
 1. **Windows 电脑**（Windows 10/11）
-2. **摄像头**（内置或 USB 都行）
-3. **VTube Studio**（Steam 免费下载）+ 一个 Live2D 模型
-4. **Python 3.10~3.12**（⚠️ 不要装 3.13/3.14）
+2. **一个面捕源**（三选一）：
+   - 📱 **手机/平板 app**：iFacialMocap（iOS，付费，TrueDepth 最强）或 MeowFace（安卓，免费）
+   - 📡 **PC 追踪软件**：VSeeFace（免费，用电脑摄像头）或 Warudo
+3. **形象软件**：VTube Studio（Live2D）或 Warudo 等（3D），装好并加载模型
 
----
+> 不用摄像头也能用 FaceEQ（走手机 app 时不占电脑摄像头）；有电脑摄像头的话，
+> VSeeFace 挂上它就是免费面捕源。
 
-## 第 1 步：安装 Python
+## 第 1 步：下载并运行（exe 版，免安装）
 
-1. 去 https://www.python.org/downloads/ 下载 **Python 3.12**
-2. 安装时 ⚠️ **勾选 "Add Python to PATH"**（页面最底部，很重要！）
-3. 验证：按 `Win+R` → 输入 `cmd` → 回车 → 输入 `python --version` → 看到 `Python 3.12.x` 就对了
+1. 下载 `FaceEQ-v0.2.0-win64.zip` → **解压到一个文件夹**（别在 zip 里直接双击）
+2. 双击 `FaceEQ.exe`
+   - 若 Windows 弹蓝色 SmartScreen 提示 → 「更多信息」→「仍要运行」（应用未做签名，见 FAQ）
+   - 若杀毒软件报毒/删文件 → 给 FaceEQ 文件夹加白名单（详见 FAQ）
 
-## 第 2 步：下载并解压 FaceEQ
+## 第 2 步：准备面捕源（以手机 app 为例）
 
-1. 下载 `FaceEQ.zip`
-2. 解压到一个文件夹（比如 `D:\FaceEQ`）
+1. 手机/平板和电脑连**同一个 WiFi**
+2. FaceEQ 里选输入源（📱 手机 UDP），点「开始」→ 弹窗里显示**本机 IP 和端口**（默认 49983）
+3. 手机 app 里填这个 IP 和端口，开始发送
+4. FaceEQ 状态栏不再提示「断流」= 数据通了（首次可能弹防火墙提示，点允许）
 
-## 第 3 步：安装依赖
+**用电脑摄像头？** 选 📡 VMC 输入，然后装 [VSeeFace](https://www.vseeface.icu/)：
+设置里开启 VMC 发送、地址 127.0.0.1、端口 39539（完整 52 表情需要 Perfect Sync 模型）。
 
-打开命令提示符（`Win+R` → `cmd`），进入 FaceEQ 文件夹，依次输入：
+## 第 3 步：校准（推荐，约 2 分钟）
+
+点「● 校准」，照屏幕上的中英文提示做 11 个表情（中性 → 微笑 → 撇嘴 → …），
+每个保持 1 秒按空格采样。校准让每个表情的增益匹配**你的脸**，效果明显更跟手。
+跳过也行（用通用默认），随时可以再校准。
+
+## 第 4 步：选输出目标 + 开始
+
+1. 输出目标勾选（可多选）：
+   - **VTS (Live2D)**：VTube Studio 里先勾 Allow Plugin API access、
+     **关掉自带摄像头跟踪（Camera → None）**，首次连接点 Allow 授权
+   - **VMC**：Warudo/VNyans/VSeeFace 等开启 VMC 接收（端口 39540 对齐）
+   - **OSC**：自定义目标（VRChat FT 桥等）
+2. 点「▶ 开始」→ 做表情试试！
+3. 「信号监视」区五根条实时显示情绪强度；拖**情绪滑块**（+1 放大 / −1 压平）立即生效
+4. **预设 Preset** 下拉里选 ★ 内置人设（元气/扑克脸/傲娇…）一键切换风格
+
+## 源码运行（开发者/不想用 exe）
 
 ```
-cd D:\FaceEQ
-python -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+PYTHONUTF8=1 .venv\Scripts\python.exe gui.py
 ```
 
-⏳ 等待安装完成（几分钟，会下载 mediapipe / opencv / PySide6 等）。
-
-## 第 4 步：设置 VTube Studio
-
-1. 打开 VTube Studio，**加载你的模型**
-2. 进入 **设置**，勾选 **「Allow Plugin API access」**
-3. ⚠️ **关掉摄像头跟踪**（Camera → None/Off）—— FaceEQ 需要独占摄像头
-
-## 第 5 步：启动 FaceEQ
-
-在命令提示符里：
-
-```
-.venv\Scripts\python.exe gui.py
-```
-
-🎉 你会看到 FaceEQ 的控制面板（深色蓝高亮窗口，VTS 风格）。
-
-## 第 6 步：首次校准（约 2 分钟）
-
-1. 点 **「校准」** → 弹出确认框 → 点确认
-2. 打开一个摄像头窗口 + 右侧**中英文提示面板**
-3. 照着右侧提示，**依次做 11 个表情**：
-   - 先做 neutral（放松脸）→ 按空格采样
-   - 然后微笑 / 嘴角下垂 / 眯眼 / 皱眉 / 抿唇 / 内眉抬（八字眉）/ 挑眉 / 瞪眼 / 皱鼻 / 张嘴
-     → 每个保持住后按空格
-   - 某个做不出来？按 `ESC` 跳过即可（该表情用默认增益，不影响其他）
-4. 全部做完 → 自动生成你的**个人校准文件**
-
-💡 校准只需做一次（换摄像头/换脸时重做）。详情见 [校准指南](calibration.md)。
-
-## 第 7 步：在 VTS 里映射参数（一次性）
-
-FaceEQ 会自动在 VTS 里创建自定义参数（如 `faceeqEyeSmile`、`faceeqBrowForm` 等）。
-你需要在 VTS 的 **模型参数映射** 界面里，把它们接到你模型的对应参数上。
-
-📖 详细步骤见 [VTS 接入指南](vts-setup.md) 的「第二步」。
-
-## 第 8 步：开始使用！
-
-1. FaceEQ 面板里点 **「开始」**
-2. 提示「关掉 VTS 摄像头」→ 确认
-3. 🎬 你的小人开始跟着你的表情动，而且**更夸张**了！
-4. **拖滑块实时调整**（运行中即时生效，不用重启）：
-   - 某情绪拖到 **+1.0** = 放大到最强
-   - 拖到 **0** = 不额外塑造
-   - 拖到 **-1.0** = 压成扑克脸（抑制该情绪）
-
-## 保存你的设置（预设）
-
-调好了？点 **「存」** → 输入名字（如「元气少女」）→ 保存。
-下次打开 FaceEQ，下拉选「元气少女」→ 一键恢复所有滑块值。
-
----
+CLI：`main.py --input phone --output vts vmc` 等，见 `main.py --help`。
 
 ## 常见问题
 
 | 问题 | 解决 |
 |---|---|
-| 启动报错 `ModuleNotFoundError` | 重装依赖：`.venv\Scripts\python.exe -m pip install -r requirements.txt` |
-| 点「开始」后没反应 | 确认 VTS 开着 + 勾了「Allow Plugin API access」 |
-| 小人很卡（1 FPS） | VTS 摄像头跟踪没关 → VTS 设置里 Camera 设 None/Off |
-| sad/disgust 滑块拖了没效果 | 普通摄像头对「嘴角下垂」「皱鼻」等细微表情读数有限。happy/angry/surprised 是可靠的。 |
-| 校准时摄像头画面是黑的 | 摄像头被其他程序占用（VTS/OBS/Zoom）→ 关掉它们再试 |
-| VTS 弹「是否允许插件」 | 点 **Allow**（首次连接时弹出，之后不再问） |
-| 关掉 FaceEQ 后小人不动了 | 正常——FaceEQ 停止注入后，VTS 参数 1 秒后自动回到默认 |
+| 杀软报毒 / SmartScreen 拦截 | 未签名应用的常见误报 → 白名单/仍要运行，详见 [FAQ](faq.md) |
+| 状态栏一直「断流」 | 手机和电脑同一 WiFi、app 里 IP/端口填对、防火墙放行 UDP——FAQ 有五步排查 |
+| VTS 连不上 | VTS 开着 + 勾 Allow Plugin API access |
+| 小人很卡（1 FPS） | VTS 摄像头跟踪没关 → Camera 设 None/Off（面捕交给你的源） |
+| 表情幅度小 | 模型 rig 是上限；先校准、gain 拖高；细节见 FAQ |
+| sad/disgust 没反应 | 取决于面捕源：TrueDepth(iPhone/iPad) 实测可用；普通摄像头偏弱——校准+调源 |
 
 ---
 
 ## 还需要帮助？
 
 - 📖 [FAQ / 排错](faq.md)（杀软误报、连不上、表情不动等）
-- 📖 [完整校准指南](calibration.md)
-- 📖 [VTS 接入详细指南](vts-setup.md)
-- 📖 [项目架构文档](../ARCHITECTURE.md)
+- 📖 [校准详解](calibration.md) · [VTS 接入](vts-setup.md) · [输出目标](outputs.md) · [手机面捕](phone-tracking.md)

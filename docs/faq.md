@@ -18,17 +18,18 @@ Python 打包程序（PyInstaller）的常见误报，Defender 和部分国产�
 确认解压过（别在 zip 里直接双击）；`FaceEQ.exe` 必须和 `_internal` 文件夹在同一目录；
 换一个不含特殊字符的纯英文路径再试；仍失败请开 Issue 附截图。
 
-## 摄像头与画面
+## 面捕源（输入）
 
-**校准/开始时摄像头画面是黑的**
-摄像头被其他程序占用（VTS / OBS / Zoom / 浏览器标签）→ 关掉它们再点「开始」。
+**状态栏一直「断流/等数据」**
+输入源没在发数据：手机 app 填对 IP/端口（开始时弹窗里有）、同一 WiFi、防火墙放行；
+VMC 输入则检查发送端软件的 VMC 发送设置。
 
-**画面很卡，FPS 只有个位数（典型 1 FPS）**
-FaceEQ 和 VTS 在抢同一个摄像头 → 在 **VTS 设置里把 Camera 设为 None**，
-让 FaceEQ 独占摄像头（这是推荐接线：FaceEQ 出参数，VTS 只渲染）。
+**画面很卡（源本身卡）**
+v0.2.0 起 FaceEQ 不占摄像头。卡顿多来自面捕源侧：VSeeFace 和 VTS 抢同一个摄像头
+→ VTS 的 Camera 设 None/Off（面捕交给 VSeeFace，VTS 只渲染）。
 
-**摄像头列表里找不到我的摄像头 / 想换一个**
-主窗口「摄像头」下拉可切换；用手机面捕则选「📱 手机 UDP」，不占摄像头。
+**想换输入源 / 没有摄像头**
+「输入源」下拉切换 📱 手机 UDP / 📡 VMC 输入；VSeeFace 用电脑摄像头做面捕，免费。
 
 ## VTS（Live2D）输出
 
@@ -49,10 +50,10 @@ VTS 没开，或没勾 VTS 设置里的 **Allow Plugin API access**。勾上后�
 
 ## 情绪效果
 
-**happy/angry/surprised 有效，sad/disgust 拖了没反应**
-普通 RGB 摄像头对「嘴角下垂」「皱鼻」这类细微肌肉动作物理性欠读。
-两条路：用 **手机面捕**（TrueDepth 能读到，见 [phone-tracking.md](phone-tracking.md)），
-或只用三个可靠情绪做人设。
+**happy/angry/surprised 有效，sad/disgust 反应弱**
+取决于面捕源：**TrueDepth（iPhone/iPad）实测可用**（撇嘴 sad 0.82、皱鼻 disgust 0.64）；
+普通 RGB 追踪（含 VSeeFace）对细微 AU 偏弱。建议：换/加 TrueDepth 源、校准、
+并把对应情绪滑块拖到 +1。v0.2.0 还做了皱鼻压 angry 的调权（皱鼻不再被怒盖住）。
 
 **表情整体幅度太小**
 模型 rig 是表情上限——Live2D 模型本身画/绑的幅度小，EQ 只能放大已有幅度。
@@ -76,6 +77,9 @@ VTS 没开，或没勾 VTS 设置里的 **Allow Plugin API access**。勾上后�
 手机模式点「开始」时，FaceEQ 的确认框里会直接显示本机 IP 和端口，照填到手机 app 即可。
 
 ## VMC / OSC 输出（Warudo / VNyan / VSeeFace / VRChat）
+
+> v0.2.0 起 VSeeFace 也可以当**输入源**（其 VMC 发送 → FaceEQ 的 VMC 输入，
+> 端口 39539）——见 README 输入源表。
 
 **目标软件里看不到表情**
 按顺序查：

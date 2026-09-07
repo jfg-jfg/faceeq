@@ -6,15 +6,16 @@
 
 - [ ] 五个 smoke 全过：`probes/{profile_smoke,phone_smoke,output_smoke,gui_smoke,voice_smoke}.py`
 - [ ] 真机手测：webcam 源 + VTS 输出完整跑一遍（校准→开始→拖滑块→预设）
-- [ ] 待验收项确认：手机源方向符号（`_ROT_SIGN/_EYE_SIGN`）、Warudo/VMC 对接
+- [ ] 待验收项确认：手机源方向符号绑定（`_ROT_SIGN/_EYE_SIGN`，TrueDepth C 段已于
+      2026-09-07 离线验收通过，见 docs/acceptance-sprint1.md）、Warudo/VMC 对接
 - [ ] 版本号：`faceeq/__init__.py` 加 `__version__`（首次 v0.1.0）；CHANGELOG 记录变更
 
 ## 2. 打包
 
 - [ ] `.venv/Scripts/python.exe -m pip install -r requirements.txt pyinstaller`
 - [ ] `PYTHONUTF8=1 .venv/Scripts/python.exe probes/build_release.py`
-- [ ] 产物自检：`dist/FaceEQ/FaceEQ.exe` 存在；目录含 `models/face_landmarker.task`、
-      `presets/builtin/`、`custom_expressions.json`
+- [ ] 产物自检：`dist/FaceEQ/FaceEQ.exe` 存在；目录含 `presets/builtin/`、
+      `custom_expressions.json`；`_internal` 无 mediapipe/cv2/models 残留（v0.2.0 起约 ≤140MB）
 - [ ] 干净环境语义冒烟：双击 exe → 主窗口出现 → 无 profile 时出首启动引导 →
       信号监视器动 → 退出无残留进程
 - [ ] 杀软误报检查（Windows Defender + 一款第三方）；被误报时在 README「排错」加白名单指引，
