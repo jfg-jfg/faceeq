@@ -120,6 +120,12 @@ class PhoneInput:
         self._latest = None
         self._last_recv = 0.0
         self._next_handshake = 0.0
+        # 用户方向系数 (yaw, pitch, roll, eyeX, eyeY)：+1 正常 / -1 镜像 / 0 冻结 / 中间=阻尼
+        self.orientation = [1.0, 1.0, 1.0, 1.0, 1.0]
+
+    def set_orientation(self, yaw=1.0, pitch=1.0, roll=1.0, eye_x=1.0, eye_y=1.0):
+        """GUI 方向滑块实时写入（乘法系数，叠在 _ROT_SIGN/_EYE_SIGN 硬件基线之上）。"""
+        self.orientation = [yaw, pitch, roll, eye_x, eye_y]
 
     def start(self):
         pass   # __init__ 已绑定
@@ -150,7 +156,11 @@ class PhoneInput:
             time.sleep(1.0 / 30)
             return Frame()
         p = self._latest
-        return Frame(bs=p["bs"], rot=p["rot"], eye=p["eye"])
+        oy, op, orr, exs, eys = self.orientation
+        rot = tuple(c * v for c, v in zip((oy, op, orr), p["rot"])) if p["rot"] else None
+        eye = ((exs * p["eye"][0], eys * p["eye"][1],
+                exs * p["eye"][2], eys * p["eye"][3])) if p["eye"] else None
+        return Frame(bs=p["bs"], rot=rot, eye=eye)
 
     def is_stale(self) -> bool:
         """是否未连接/断流（GUI 状态提示用）。"""

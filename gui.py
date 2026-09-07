@@ -100,6 +100,25 @@ def delete_preset(name):
     os.remove(os.path.join(PRESETS_DIR, name + ".json"))
 
 
+# —— 方向微调 I/O（yaw/pitch/roll/eyeX/eyeY 乘法系数）——
+ORIENTATION_FILE = "orientation.json"
+
+def load_orientation():
+    try:
+        with open(ORIENTATION_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return [max(-1.0, min(1.0, float(data.get(k, 1.0))))
+                for k in ("yaw", "pitch", "roll", "eye_x", "eye_y")]
+    except (OSError, ValueError, TypeError):
+        return [1.0, 1.0, 1.0, 1.0, 1.0]
+
+def save_orientation(vals):
+    keys = ("yaw", "pitch", "roll", "eye_x", "eye_y")
+    with open(ORIENTATION_FILE, "w", encoding="utf-8") as fh:
+        json.dump({k: round(float(v), 3) for k, v in zip(keys, vals)},
+                  fh, ensure_ascii=False, indent=2)
+
+
 # —— 自定义复合表情 I/O ——
 def sanitize_custom_exprs(raw):
     """{名字: {情绪: 权重}} 消毒：名字过预设名消毒、情绪限定 5 基础、权重钳 [-1,1]。"""
@@ -272,6 +291,7 @@ class Snapshot:
     custom_act: dict = None
     input_kind: str = "phone"
     input_port: int = PHONE_PORT
+    orientation: list = None
     output_kinds: list = None
     output_host: str = "127.0.0.1"
     output_port: int = 39540
@@ -292,6 +312,7 @@ class Params:
         self.calib = None
         self.input_kind = "phone"
         self.input_port = PHONE_PORT
+        self.orientation = load_orientation()
         self.shaping = emotions.DEFAULT_SHAPING.copy()   # 塑造配置（BS 矩阵+耦合）
         self.test = None                                  # (情绪, 强度, 到期时刻) | None
         self.custom_exprs = {}                            # {名字: {情绪: 权重}}
@@ -315,6 +336,7 @@ class Params:
                             custom_act=dict(self.custom_act),
                             input_kind=self.input_kind,
                             input_port=self.input_port,
+                            orientation=list(self.orientation),
                             output_kinds=list(self.output_kinds),
                             output_host=self.output_host,
                             output_port=self.output_port,
@@ -353,6 +375,14 @@ class Params:
     def set_custom_act(self, name, v):
         with self._lock:
             self.custom_act[name] = v
+
+    def set_orientation(self, vals):
+        with self._lock:
+            self.orientation = list(vals)
+
+    def set_orientation_value(self, idx, v):
+        with self._lock:
+            self.orientation[idx] = v
 
     def set_output(self, kinds, host, port):
         with self._lock:
@@ -416,6 +446,7 @@ class FaceEQWorker(QObject):
             input_kind = snap.input_kind
             self.status.emit(tr("等待面捕数据…（手机/平板 app 或发送端软件开始推送）"))
             cap = create_input(input_kind, port=snap.input_port)
+            cap.set_orientation(*snap.orientation)
             cap.start()
             self.status.emit(tr("正在连接输出目标…"))
             for kind in snap.output_kinds:
@@ -444,6 +475,7 @@ class FaceEQWorker(QObject):
             while self._running:
                 f = cap.read()
                 s = self._params.snapshot()
+                cap.set_orientation(*s.orientation)
                 # —— 语音情绪（实验）：按需开/关采集，失败不影响 EQ 主链路 ——
                 if s.voice_enabled:
                     if voice is None:
@@ -914,6 +946,19 @@ class MainWindow(QMainWindow):
         self.input_port.valueChanged.connect(self._push_input)
         in_row.addWidget(self.input_port)
         root.addLayout(in_row)
+
+        # 方向微调（镜像/冻结/阻尼）
+        g_dir = QGroupBox("方向微调 Direction（-1 镜像 / 0 冻结 / +1 正常；面捕源方向反了就拨到 -1）")
+        QGridLayout(g_dir)
+        dir_labels = ["头部左右 yaw", "头部俯仰 pitch", "头部歪斜 roll", "眼球左右 eyeX", "眼球上下 eyeY"]
+        self._dir_sliders = {}
+        for i, lbl in enumerate(dir_labels):
+            sl = FloatSlider(lbl, -1.0, 1.0, 0.05, self.params.orientation[i], "{:+.2f}")
+            sl.valueChanged.connect(
+                lambda v, ii=i: (self.params.set_orientation_value(ii, v),
+                                 save_orientation(self.params.orientation)))
+            g_dir.layout().addWidget(sl, i // 2, i % 2)
+        root.addWidget(g_dir)
 
         # 输出目标
         g_out = QGroupBox("输出目标 Output")

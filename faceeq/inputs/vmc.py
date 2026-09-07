@@ -43,6 +43,11 @@ class VmcInput:
         self._rot = None
         self._last_recv = 0.0
         self._server = None
+        # 用户方向系数 (yaw, pitch, roll)：+1 正常 / -1 镜像 / 0 冻结（eye 通道 VMC 无）
+        self.orientation = [1.0, 1.0, 1.0]
+
+    def set_orientation(self, yaw=1.0, pitch=1.0, roll=1.0, eye_x=1.0, eye_y=1.0):
+        self.orientation = [yaw, pitch, roll]
 
     def start(self):
         disp = dispatcher.Dispatcher()
@@ -74,12 +79,14 @@ class VmcInput:
         now = time.time()
         with self._lock:
             bs = dict(self._bs)
-            rot = self._rot
+            rot0 = self._rot
             stale = (now - self._last_recv) > self._stale_after if self._last_recv else True
         if stale:
             # 断流空帧节流（与手机源一致，防调用方忙循环）
             time.sleep(1.0 / 30)
             return Frame()
+        oy, op, orr = self.orientation
+        rot = tuple(c * v for c, v in zip((oy, op, orr), rot0)) if rot0 else None
         return Frame(bs=bs, rot=rot)
 
     def is_stale(self) -> bool:

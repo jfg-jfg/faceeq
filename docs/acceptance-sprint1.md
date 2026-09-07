@@ -103,3 +103,7 @@ PYTHONUTF8=1 .venv\Scripts\python.exe -u probes\vmc_sign_probe.py
 2. 冲刺②新增:signals 调权——sneer 高时压制 browDown 对 angry 的贡献(disgust 抢回主导);
 3. 文档新增注意项:面捕设备需固定(支架);手持时头转不映射(相对坐标特性);
 4. A 段符号(低优先级):设备固定后补录,或等 MeowFace/正版 iFacialMocap 实时流做绑定验收。
+
+> **✅ 2026-09-08 绑定验收确认**：用户以 MeowFace 实时流确认方向正确。
+> 另加「方向微调」功能：GUI 五滑块（yaw/pitch/roll/eyeX/eyeY，-1..1）
+> 让任何用户自行镜像/冻结/阻尼各轴——符号不再是硬编码问题。

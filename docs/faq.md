@@ -76,6 +76,10 @@ VTS 没开，或没勾 VTS 设置里的 **Allow Plugin API access**。勾上后�
 **电脑的 IP 是多少？**
 手机模式点「开始」时，FaceEQ 的确认框里会直接显示本机 IP 和端口，照填到手机 app 即可。
 
+**模型转头/眼球方向反了（镜像）**
+主窗口「方向微调 Direction」区把对应轴的滑块拨到 **-1** 即可镜像；0 = 该轴冻结不动，
+中间值 = 阻尼（头动模型跟着动但幅度减半）。设置会存 `orientation.json`。
+
 ## VMC / OSC 输出（Warudo / VNyan / VSeeFace / VRChat）
 
 > v0.2.0 起 VSeeFace 也可以当**输入源**（其 VMC 发送 → FaceEQ 的 VMC 输入，

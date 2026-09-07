@@ -106,5 +106,20 @@ ck("(g) 断流 read()→空帧", not fr.bs and fr.rot is None and fr.eye is None
 ck(f"(g) 断流 read() 节流 ≥20ms (dt={dt * 1000:.0f}ms)", dt >= 0.02)
 cap.release()
 
+# (h) 方向系数：镜像 yaw/eyeX 后 read() 输出翻号（用户可调自由度）
+f_in = Frame(bs={"jawOpen": 0.2}, rot=(10.0, -5.0, 3.0), eye=(0.2, -0.1, 0.2, -0.1))
+cap2 = PhoneInput()
+cap2._next_handshake = float("inf")
+cap2.set_orientation(yaw=-1.0, eye_x=-1.0)   # 镜像 yaw + 眼球X
+# 直接测 adapter 层：镜像后 Frame.rot 应为 (-10, -5, 3)、eye X 翻号
+cap2._latest = {"bs": f_in.bs, "rot": f_in.rot, "eye": f_in.eye}
+cap2._last_recv = _t.time()
+fr2 = cap2.read()
+ck(f"(h) 镜像 yaw 翻号 ({fr2.rot[0]:.1f} == -10)", abs(fr2.rot[0] + 10.0) < 1e-9)
+ck(f"(h) pitch/roll 不受影响 ({fr2.rot[1]:.1f},{fr2.rot[2]:.1f})", abs(fr2.rot[1] + 5.0) < 1e-9 and abs(fr2.rot[2] - 3.0) < 1e-9)
+ck(f"(h) 镜像 eyeX 翻号 ({fr2.eye[0]:.2f} == -0.2)", abs(fr2.eye[0] + 0.2) < 1e-9)
+ck(f"(h) eyeY 不受影响 ({fr2.eye[1]:.2f})", abs(fr2.eye[1] + 0.1) < 1e-9)
+cap2.release()
+
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}"))
 sys.exit(1 if failures else 0)

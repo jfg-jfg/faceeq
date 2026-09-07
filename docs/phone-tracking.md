@@ -58,6 +58,7 @@ PYTHONUTF8=1 .venv/Scripts/python.exe main.py --phone --phone-port 49983
   以校准实测为准（校准报告里 delta>0.05 即活）。
 - **设备请固定**（支架/架稳）：头旋转是相对摄像头的——手持设备时头和设备一起动，
   头转不映射到模型（app 有头旋转数据时才生效）。
-- **方向不对？**（转头方向/眼球方向反了）：轴与符号集中定义在
-  `faceeq/capture.py` 的 `_ROT_SIGN` / `_EYE_SIGN`，改这两个元组即可，别动解析逻辑。
+- **方向不对？**（转头方向/眼球方向反了）：GUI「方向微调」区把对应轴拨到 **-1（镜像）**即可，
+  不用改代码；滑块 -1..1 还能冻结（0）或阻尼（0~1）某轴。底层符号在
+  `faceeq/inputs/phone.py` 的 `_ROT_SIGN` / `_EYE_SIGN`。
 - 首选 5GHz WiFi 或 USB 网络共享，延迟更低；抖动由 FaceEQ 的 EMA 平滑兜底（可调 smooth）。

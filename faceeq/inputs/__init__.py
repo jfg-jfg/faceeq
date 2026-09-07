@@ -25,6 +25,9 @@ class InputAdapter:
         """是否未连接/断流（GUI 状态提示用）。"""
         return False
 
+    def set_orientation(self, yaw=1.0, pitch=1.0, roll=1.0, eye_x=1.0, eye_y=1.0):
+        """方向系数（-1..1 滑块）：镜像/冻结/阻尼各轴。不支持 eye 的源忽略 eye_*。"""
+
     def release(self):
         """释放端口/线程。"""
 
