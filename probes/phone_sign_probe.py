@@ -17,7 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from faceeq import emotions
-from faceeq.capture import PhoneCapture
+from faceeq.inputs.phone import PhoneInput
 
 HEADER = """━━━ 符号验收探针 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 逐个做动作，把打印行里的符号 (+/-) 抄进 docs/acceptance-sprint1.md 的表：
@@ -40,7 +40,7 @@ def main():
 
     print(HEADER)
     print(f"监听 UDP {args.port}，等 app 数据…（iFacialMocap 填本机 IP + 此端口）\n")
-    cap = PhoneCapture(port=args.port)
+    cap = PhoneInput(port=args.port)
     try:
         while True:
             f = cap.read()

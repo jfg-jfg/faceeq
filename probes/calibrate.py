@@ -25,7 +25,8 @@ import cv2
 import numpy as np
 
 from faceeq import emotions, profile
-from faceeq.capture import PHONE_PORT, open_source
+from faceeq.inputs.phone import PHONE_PORT
+from faceeq.inputs import create_input
 
 # (raw 键, 中文标题, 中文动作, 英文动作). raw 键对应 signals_with_raw 的 raw / profile.RAW_KEYS。
 POSES = [
@@ -186,15 +187,19 @@ def _phone_canvas(f):
 
 def main():
     ap = argparse.ArgumentParser(description="FaceEQ 引导式 AU 校正向导")
-    ap.add_argument("--source", type=str, default="0",
-                    help="摄像头序号；或 \"phone\" 用手机面捕（iFacialMocap/MeowFace）")
+    ap.add_argument("--source", type=str, default="phone",
+                    help="输入源：phone（iFacialMocap/MeowFace UDP）或 vmc（PC 追踪软件）")
     ap.add_argument("--phone-port", type=int, default=PHONE_PORT,
                     help="手机 UDP 端口（仅 --source phone 时生效）")
+    ap.add_argument("--vmc-port", type=int, default=39539,
+                    help="VMC 输入监听端口（仅 --source vmc 时生效）")
     ap.add_argument("--out", default=os.path.join("profiles", "calibration.json"),
                     help="profile 输出路径")
     args = ap.parse_args()
 
-    cap = open_source(args.source, args.phone_port)
+    kw = {"port": args.phone_port if args.source == "phone" else args.vmc_port}
+    cap = create_input(args.source, **kw)
+    cap.start()
     cam_win = "FaceEQ calibrate (SPACE=capture / ESC=skip / q=quit)"
     cv2.namedWindow(cam_win, cv2.WINDOW_AUTOSIZE)
     if args.source == "phone":

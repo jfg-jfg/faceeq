@@ -1,28 +1,20 @@
 """
-情绪引擎：规则情绪检测 + 按情绪差异化放大 + 跨参数耦合。
+情绪引擎：规则情绪检测 + blendshape 空间按情绪差异化放大 + BS 空间耦合。
 
-设计（见 [[face-project-design]]）：
+设计（v0.2.0 纯协议单趟管线）：
 - 情绪是「放大倍数的调节器」，不是替代跟踪。用户真实表情出底数，检测到的情绪
-  改变各部位的放大率，让该情绪在小人上读起来更清楚（笑→嘴/眼笑放大更多；
-  怒→眉放大、嘴形压一点；惊讶→睁大眼、挑眉）。
+  改变各形状的放大率，让该情绪读起来更清楚（笑→嘴/眼笑放大更多；怒→眉放大；惊讶→睁大眼、挑眉）。
 - 情绪信号用规则从 blendshape 算（EMFACS 风格）：瞬时、不抖、无延迟，绕开
   平滑治抖↔延迟的死扣。情绪规则**不依赖 jawOpen**，所以说话不会误触发情绪。
-- 对口型（ParamMouthOpenY）走快车道：只吃 global_gain，不受情绪影响，
-  保证说话时嘴零延迟、不被情绪层串味。
+- **EQ 只发生在 blendshape 空间**（v0.2.0 单趟换轴）：signals 吃原始 bs → bs_amplify
+  出 EQ 后 bs' → 映射层从 bs' 翻译 Live2D 参数。不再有 Live2D 空间的平行放大。
 - 情绪增益是有符号强度 ∈[-1,1]：1.0=全量夸张（默认）、0=不塑造、负=抑制该情绪
-  （把相关参数往中性压，做扑克脸/死板人设 = persona 控制）。
-- 跨参数情绪耦合（COUPLING，FACS + Ekman「可靠肌肉」为据）：happy 让眼笑(AU6)追
-  嘴笑(AU12)=Duchenne；sad 让内眉抬(AU1)追嘴角下垂(AU15)=悲伤真伪标记。这些都是难伪造、
-  摄像头易欠读的共激活，纯放大主特征会让表情读起来假；耦合补上。VTS 每参数独立滑块
-  结构上做不到条件跨参数驱动，这是 FaceEQ 的护城河。
-
-注：「漫画化偏差放大」out=neutral+gain·(base−neutral) 对当前参数集是 no-op
-（所有表情参数 resting=0，代入即 gain·base，等价线性），故核心仍是带符号增益 +
-耦合；非线性噪声压制曲线缓后（当前未观察到噪声问题）。
+  （把相关形状往 0 压，做扑克脸/死板人设 = persona 控制）。
+- BS 空间耦合（BS_COUPLING，FACS + Ekman「可靠肌肉」为据）：happy 让眼笑(AU6)追
+  嘴笑(AU12)=Duchenne；sad 让内眉抬(AU1)追嘴角下垂(AU15)=悲伤真伪标记。这些难伪造、
+  易欠读的共激活，纯放大主特征会让表情读起来假；耦合补上。
 """
 from dataclasses import dataclass, field
-
-from .mapping import RANGES
 
 EMOTIONS = ["happy", "angry", "sad", "surprised", "disgust"]
 
@@ -44,6 +36,11 @@ ANGRY_W = (0.5, 0.5)           # (browDn, press)
 SURPRISED_W = (0.6, 0.4, 1.2)  # (eyeWide, browUp, jaw 死区外系数)
 SAD_W = (0.6, 0.4)             # (frown, browIn)
 DISGUST_W = (0.7, 0.3)         # (sneer, frown)
+
+# 皱鼻(sneer)对 angry 的抑制系数（v0.2.0，iPad TrueDepth 实测背书）：
+# 皱鼻(AU9)的表情原型天然伴随皱眉(AU4)，browDown 拉满时 angry 0.88 会盖过 disgust 0.64
+# （验收实测）。sneer 高时按 (1−k·sneer) 压 angry，让 disgust 抢回主导。
+SNEER_ANGRY_SUPPRESS = 0.45
 
 # 每情绪的"max 脸"：各 AU 在该情绪最强时该取的值（"td"=target_delta=正贡献/max；
 # 未列出=0=负贡献或无关）。用于预计算 emotion_scale（量程统一）。死 AU 在预计算时再置 0。
@@ -82,12 +79,18 @@ def _sad(frown_eff, browIn_eff, smile):
                     + SAD_W[1] * min(1.0, browIn_eff) - smile)
 
 
+def _angry(r, w_bd=ANGRY_W[0], w_pr=ANGRY_W[1]):
+    """angry = browDn/press 加权和 × sneer 抑制。两引擎共享（见 SNEER_ANGRY_SUPPRESS）。"""
+    base = w_bd * r["browDn"] + w_pr * r["press"]
+    return _clamp01(base * (1.0 - SNEER_ANGRY_SUPPRESS * min(1.0, r["sneer"])))
+
+
 def _emo_legacy(r):
     """无 profile 路径：逐字等于硬编码默认（含 SAD_FROWN_GAIN/SAD_BROWIN_GAIN）。
     任何改动都会破坏 no-regression；profile 激活时此路径不执行。"""
     return {
         "happy":     _happy(r),        # squint 只在真笑计入（见 _happy），防 rest squint 底白送 happy
-        "angry":     _clamp01(ANGRY_W[0] * r["browDn"] + ANGRY_W[1] * r["press"]),
+        "angry":     _angry(r),
         # sad：AU15/AU1 在 RGB 摄像头严重欠读，实验性加 SAD_*_GAIN 拉高弱信号（gained 路径不用）。
         "sad":       _sad(r["frown"] * SAD_FROWN_GAIN, r["browIn"] * SAD_BROWIN_GAIN, r["smile"]),
         "surprised": _clamp01(SURPRISED_W[0] * r["eyeWide"] + SURPRISED_W[1] * r["browUp"]
@@ -99,11 +102,12 @@ def _emo_legacy(r):
 def _emo_gained_raw(r, live, target_delta):
     """profile 路径的"原始"情绪值（未除 emotion_scale）。r=(raw−neutral)·gain；
     live[k]=该 AU 是否活；target_delta 用于 surprised jaw 的满量程映射。"""
-    # angry：ANGRY_W 按 live 归一（死搭档权重扔给活搭档）
+    # angry：ANGRY_W 按 live 归一（死搭档权重扔给活搭档），再吃 sneer 抑制
     w_bd = ANGRY_W[0] if live.get("browDn") else 0.0
     w_pr = ANGRY_W[1] if live.get("press") else 0.0
     wsum = w_bd + w_pr
-    angry = (w_bd * r["browDn"] + w_pr * r["press"]) / wsum if wsum > 0 else 0.0
+    angry = ((w_bd * r["browDn"] + w_pr * r["press"]) / wsum if wsum > 0 else 0.0)
+    angry = _clamp01(angry * (1.0 - SNEER_ANGRY_SUPPRESS * min(1.0, r["sneer"])))
     # surprised：eyeWide+browUp 都死 → jaw 独撑，[deadzone, target_delta]→[0,1]
     if not (live.get("eyeWide") or live.get("browUp")):
         span = max(1e-6, target_delta - JAW_DEADZONE)
@@ -185,74 +189,10 @@ def signals(bs: dict, calib=None) -> dict:
     return signals_with_raw(bs, calib)[0]
 
 
-# 每个参数的放大配置：(是否吃 global_gain, {情绪: 额外放大系数})
-# - 快车道 ParamMouthOpenY：只吃 global_gain，不受情绪影响
-# - 眼睛开合：不吃 global_gain（眨眼保持1:1），仅情绪调节
-# - 姿态/眼球：纯 1:1
-# - ParamEyeLSmile/RSmile 的 happy 塑造、ParamBrowLY/RY 的 sad 塑造都交给下面 COUPLING
-#   （耦合独占，避免与 boost 双重计数）
-PARAM_CONFIG = {
-    "ParamMouthOpenY": (True, {}),
-    "ParamMouthForm":  (True, {"happy": 0.6, "sad": 0.4, "angry": 0.3, "disgust": 0.2}),
-    "ParamBrowLY":     (True, {"surprised": 0.6}),   # sad 内眉抬交给 COUPLING（AU1←AU15）
-    "ParamBrowRY":     (True, {"surprised": 0.6}),
-    "ParamBrowLForm":  (True, {"angry": 0.6, "sad": 0.3}),
-    "ParamBrowRForm":  (True, {"angry": 0.6, "sad": 0.3}),
-    "ParamEyeLOpen":   (False, {"surprised": 0.4}),
-    "ParamEyeROpen":   (False, {"surprised": 0.4}),
-    "ParamEyeLSmile":  (False, {}),   # 眼笑塑造交给 COUPLING（happy 时追嘴笑）
-    "ParamEyeRSmile":  (False, {}),
-    "ParamAngleX": (False, {}), "ParamAngleY": (False, {}), "ParamAngleZ": (False, {}),
-    "ParamEyeBallX": (False, {}),
-}
-
-
-# 跨参数情绪耦合规则（FACS + Ekman「可靠肌肉」理论；FaceEQ 护城河——VTS 每参数独立
-# 滑块做不到条件跨参数驱动）。每条：(目标输出参数, 源输出参数, 门情绪, 强度 k, 必须胜过)。
-# 源参数名前可加 '-' 表示取反（取双极参数负半轴为正量纲，如嘴角下垂 = -MouthForm）。
-# 「必须胜过」=一组情绪名：门情绪强度须 ≥ 这些里任一个，耦合才开火（防串味——如下垂
-# 同时属于 sad/disgust，纯靠 sad>0 会在厌恶/怒脸上误抬眉）。
-#
-# 语义：门情绪>0 且胜过竞争情绪时，把【已放大】的目标输出抬到至少 k·|源正半轴|·门情绪·
-# 该情绪增益（只抬不压，不覆盖更强的真实检测）。乘 eg 让 persona 负增益时自然停耦合，
-# 避免「一处被压、另一处却被耦合抬」的不一致。在 amplify 逐参数循环之后、输出空间做。
-#
-# 每条都对应「该情绪的真伪/强度标记 AU」——Ekman 难伪造的可靠肌肉，或摄像头欠读的共激活：
-# - happy → 眼笑(AU6) 追 嘴笑(AU12)：Duchenne 微笑。AU6 难伪造 + ARKit 欠读 eyeSquint。
-# - sad   → 内眉抬(AU1) 追 嘴角下垂(AU15)：依据是 Ekman 可靠肌肉理论——AU1(frontalis 内侧)
-#   难主动伪造、是悲伤原型(AU1+AU4+AU15)的真诚标记；摄像头易欠读 → 用好读的下垂去补。
-#   （注：Malek,Messinger 2018,Emotion 把 Duchenne 标记推广到悲，测的是 AU6 眼缩窄、对 AU1
-#   零证据；选 AU1 而非 AU6 是因「悲嘴+笑眼」会读成假笑/惊悚，AU1 无此歧义。）
-#
-# 刻意不加（有据排除，非偷懒）：
-# - angry：原型 AU4+5+7+23。眼向存疑——AU5(睁大怒视)与 AU7(睑收紧)在冷怒/暴怒里方向相反，
-#   无一致欠读标记；AU23(唇收紧)无 ARKit 通道。怒的可靠标记 AU4(皱眉)已由 BrowForm 直接放大覆盖。
-# - surprised：原型 AU1+2+5+26 全部好读且已映射，无欠读标记（文献亦未将惊讶纳入 Duchenne 推广）。
-# - disgust：标记 AU9(皱鼻)好读(noseSneer)但当前无 Live2D 输出参数。非不可能——FaceEQ 既会
-#   自建自定义 VTS 参数，未来可加 FaceEQNoseWrinkle + disgust→皱鼻耦合；暂不做（优先级低）。
-COUPLING = [
-    # happy 时眼笑追嘴笑（AU6←AU12，Duchenne）。happy 由 smile 驱动、不和负面情绪共享，无需 must_beat。
-    ("ParamEyeLSmile", "ParamMouthForm", "happy", 0.8, ()),
-    ("ParamEyeRSmile", "ParamMouthForm", "happy", 0.8, ()),
-    # sad 时内眉抬追嘴角下垂（AU1←AU15）。下垂同时属于 sad/disgust，故须 sad≥怒 且 sad≥厌 才开火，
-    # 否则会在厌恶/愤怒脸上误抬眉（FACS：厌恶眉中性、怒眉 AU4 下压，都该平/下不该抬）。
-    ("ParamBrowLY", "-ParamMouthForm", "sad", 0.5, ("angry", "disgust")),
-    ("ParamBrowRY", "-ParamMouthForm", "sad", 0.5, ("angry", "disgust")),
-]
-
-
-def dominant(emo: dict, threshold: float = 0.15) -> str:
-    """返回当前最强情绪名（用于显示）；都低于阈值时算 neutral。"""
-    if not emo:
-        return "neutral"
-    name, val = max(emo.items(), key=lambda kv: kv[1])
-    return name if val >= threshold else "neutral"
-
-
-# ---- blendshape 空间的塑形表（Phase 3 多输出：VMC/OSC → 3D 工具）----
+# ---- blendshape 空间的塑形表（EQ 唯一作用空间，VMC/OSC/VTS 全部吃这里）----
 # {ARKit blendshape 名: (是否吃全局 gain, {情绪: boost})}。未列出的键 = (False, {})
 # （结构性形状 1:1 透传：眨眼/视线/舌头/下巴左右等——放大眨眼只会夸张瞎闪）。
-# jawOpen 吃全局但不吃情绪 boost：它同时是说话通道（与 Live2D 空间的对口型快车道一致）。
+# jawOpen 吃全局但不吃情绪 boost：它同时是说话通道（零延迟）。
 _G = True
 BS_CONFIG = {
     # 嘴部表情
@@ -281,11 +221,30 @@ BS_CONFIG = {
 # mouthLeft/Right、cheekPuff、tongue*。
 
 
-def _bs_default_boosts():
-    return {k: dict(b) for k, (_, b) in BS_CONFIG.items()}
+# ---- BS 空间跨形状耦合（原 Live2D 空间 COUPLING 的单趟化，FACS 依据不变）----
+# 语义与老 COUPLING 一致：门情绪>0 且压过 must_beat 竞争者时，把【已放大】的目标形状
+# 抬到至少 k·源形状·门情绪·该情绪增益（只抬不压）。BS 空间里源值天然 0..1，无需取反技巧。
+# - happy → eyeSquint(AU6) 追 mouthSmile(AU12)：Duchenne 微笑（AU6 难伪造 + 易欠读）。
+# - sad   → browInnerUp(AU1) 追 mouthFrown(AU15)：AU1 悲伤真诚标记（Ekman 可靠肌肉），
+#   须 sad≥angry 且 sad≥disgust 才开火（下垂同时属于 sad/disgust，防厌恶/怒脸误抬眉）。
+# - 刻意不加 angry/surprised：无一致欠读标记（依据见 git 历史里 Live2D COUPLING 的论证）。
+BS_COUPLING = [
+    ("eyeSquintLeft",  "mouthSmileLeft",  "happy", 0.8, ()),
+    ("eyeSquintRight", "mouthSmileRight", "happy", 0.8, ()),
+    ("browInnerUp",    "mouthFrownLeft",  "sad", 0.5, ("angry", "disgust")),
+]
 
 
-# 「试表情」的 blendshape 空间参考底（VMC/OSC 输出预览用，与 REFERENCE_POSE 同思路）
+def dominant(emo: dict, threshold: float = 0.15) -> str:
+    """返回当前最强情绪名（用于显示）；都低于阈值时算 neutral。"""
+    if not emo:
+        return "neutral"
+    name, val = max(emo.items(), key=lambda kv: kv[1])
+    return name if val >= threshold else "neutral"
+
+
+# ---- 「试表情」的 blendshape 空间参考底 ----
+# 试表情时引擎跳过面捕，直接拿这套非零底 + 合成情绪值走 EQ，不照镜子预览塑造效果。
 REFERENCE_BS = {
     "mouthSmileLeft": 0.2, "mouthSmileRight": 0.2,
     "mouthFrownLeft": 0.1, "mouthFrownRight": 0.1,
@@ -305,21 +264,24 @@ def reference_bs() -> dict:
     return dict(REFERENCE_BS)
 
 
-# ---- 用户可调塑造配置（Phase 2a）----
-# 默认值 = 上面 PARAM_CONFIG/COUPLING 硬编码基线（no-regression：profile_smoke 钉死
-# 「默认配置输出 == 硬编码基线」）。boosts={参数: {情绪: 附加放大系数}}；
-# couplings=[(目标,源,门情绪,k,必须胜过)]。谁吃全局 gain 是结构项（对口型快车道、
-# 眨眼 1:1 等），不开放给用户调，仍查 PARAM_CONFIG 的第一列。
+def _bs_default_boosts():
+    """BS_CONFIG 默认 boost 表的独立副本（Shaping 默认值用）。"""
+    return {k: dict(b) for k, (_, b) in BS_CONFIG.items()}
+
+
+# ---- 用户可调塑造配置 ----
+# 默认值 = 上面 BS_CONFIG/BS_COUPLING 硬编码基线（no-regression：profile_smoke 钉死
+# 「默认配置输出 == 硬编码基线」）。bs_boosts={形状: {情绪: 附加放大系数}}；
+# bs_couplings=[(目标形状,源形状,门情绪,k,必须胜过)]。谁吃全局 gain 是结构项
+# （说话快车道、眨眼 1:1 等），不开放给用户调，仍查 BS_CONFIG 的第一列。
 @dataclass
 class Shaping:
-    boosts: dict = field(default_factory=lambda: {p: dict(b) for p, (_, b) in PARAM_CONFIG.items()})
-    couplings: list = field(default_factory=lambda: [tuple(c) for c in COUPLING])
-    bs_boosts: dict = field(default_factory=_bs_default_boosts)   # blendshape 空间（VMC/OSC 输出）
+    bs_boosts: dict = field(default_factory=_bs_default_boosts)
+    bs_couplings: list = field(default_factory=lambda: [tuple(c) for c in BS_COUPLING])
 
     def copy(self) -> "Shaping":
-        return Shaping(boosts={p: dict(b) for p, b in self.boosts.items()},
-                       couplings=[tuple(c) for c in self.couplings],
-                       bs_boosts={k: dict(b) for k, b in self.bs_boosts.items()})
+        return Shaping(bs_boosts={k: dict(b) for k, b in self.bs_boosts.items()},
+                       bs_couplings=[tuple(c) for c in self.bs_couplings])
 
 
 DEFAULT_SHAPING = Shaping()
@@ -328,19 +290,16 @@ DEFAULT_SHAPING = Shaping()
 def shaping_to_dict(sh: Shaping) -> dict:
     """Shaping → JSON 友好 dict（预设 / profile 持久化用）。"""
     return {
-        "param_boosts": {p: dict(b) for p, b in sh.boosts.items()},
-        "couplings": [{"target": t, "source": s, "gate": g, "k": k,
-                       "must_beat": list(mb)} for t, s, g, k, mb in sh.couplings],
         "bs_boosts": {k: dict(b) for k, b in sh.bs_boosts.items()},
+        "bs_couplings": [{"target": t, "source": s, "gate": g, "k": k,
+                          "must_beat": list(mb)} for t, s, g, k, mb in sh.bs_couplings],
     }
 
 
-def shaping_from_dict(d: dict | None) -> "Shaping | None":
-    """dict → Shaping（容错：非法项丢弃）。None/空 → None（调用方用默认塑造）。"""
-    if not d:
-        return None
-    boosts = {}
-    for p, b in (d.get("param_boosts") or {}).items():
+def _clean_boosts(raw: dict) -> dict:
+    """{形状: {情绪: 系数}} 容错清洗（非法项丢弃）。"""
+    out = {}
+    for k, b in raw.items():
         if not isinstance(b, dict):
             continue
         clean = {}
@@ -351,53 +310,36 @@ def shaping_from_dict(d: dict | None) -> "Shaping | None":
                 clean[e] = float(v)
             except (TypeError, ValueError):
                 continue
-        boosts[p] = clean
-    couplings = []
-    for c in d.get("couplings") or []:
-        try:
-            couplings.append((c["target"], c["source"], c["gate"],
-                              float(c.get("k", 0.0)), tuple(c.get("must_beat") or ())))
-        except (KeyError, TypeError, ValueError):
-            continue
+        out[k] = clean
+    return out
+
+
+def shaping_from_dict(d: dict | None) -> "Shaping | None":
+    """dict → Shaping（容错：非法项丢弃）。None/空 → None（调用方用默认塑造）。
+
+    v0.1.0 预设兼容：旧字段的 param_boosts/couplings（Live2D 空间）静默忽略，
+    只继承 bs_boosts/bs_couplings。"""
+    if not d:
+        return None
     bs_boosts = None
     if isinstance(d.get("bs_boosts"), dict):   # 缺省=用默认表；显式给出（哪怕空）才覆盖
-        bs_boosts = {}
-        for k, b in d["bs_boosts"].items():
-            if not isinstance(b, dict):
-                continue
-            clean = {}
-            for e, v in b.items():
-                if e not in EMOTIONS:
-                    continue
-                try:
-                    clean[e] = float(v)
-                except (TypeError, ValueError):
-                    continue
-            bs_boosts[k] = clean
+        bs_boosts = _clean_boosts(d["bs_boosts"])
+    bs_couplings = []
+    for c in d.get("bs_couplings") or []:
+        try:
+            bs_couplings.append((c["target"], c["source"], c["gate"],
+                                 float(c.get("k", 0.0)), tuple(c.get("must_beat") or ())))
+        except (KeyError, TypeError, ValueError):
+            continue
     if bs_boosts is None:
-        return Shaping(boosts=boosts, couplings=couplings)
-    return Shaping(boosts=boosts, couplings=couplings, bs_boosts=bs_boosts)
-
-
-# 「试表情」参考底 pose：一套非零基值，让 boost/耦合的效果不照镜子也能在 VTS 里看见
-# （试表情时引擎跳过面捕，直接拿这套底 + 合成情绪值走 amplify）。
-REFERENCE_POSE = {
-    "ParamMouthForm": 0.6, "ParamMouthOpenY": 0.15,
-    "ParamBrowLY": 0.5, "ParamBrowRY": 0.5,
-    "ParamBrowLForm": -0.3, "ParamBrowRForm": -0.3,
-    "ParamEyeLOpen": 0.7, "ParamEyeROpen": 0.7,
-    "ParamEyeLSmile": 0.25, "ParamEyeRSmile": 0.25,
-}
-
-
-def reference_pose() -> dict:
-    return dict(REFERENCE_POSE)
+        return Shaping(bs_couplings=bs_couplings) if bs_couplings else None
+    return Shaping(bs_boosts=bs_boosts, bs_couplings=bs_couplings)
 
 
 # ---- 自定义复合表情（Phase 2b）----
 # 定义 = {名字: {基础情绪: 权重}}，如「害羞」= happy 0.35 + surprised 0.30。
 # 权重可负（该表情压某个基础情绪）。激活度 a∈[0,1]（GUI 滑块）：
-# 注入量 = 权重 × a，additive 叠到检测情绪上再 clamp 0..1，之后走 amplify 全链路
+# 注入量 = 权重 × a，additive 叠到检测情绪上再 clamp 0..1，之后走 EQ 全链路
 # （persona 情绪滑块的负增益语义原样作用于注入值——「害羞」也怕扑克脸人设压 happy）。
 def apply_custom(emo: dict, exprs: dict, act: dict):
     """把激活的自定义表情加权注入情绪向量。
@@ -422,59 +364,14 @@ def apply_custom(emo: dict, exprs: dict, act: dict):
     return out, (best_name if best_val > det_max else None)
 
 
-def amplify(base: dict, emo: dict, global_gain: float = 1.5,
-            emotion_gains: dict = None, shaping: "Shaping | None" = None) -> dict:
-    """底数 base（来自 mapping.base_map）× (global_gain + 情绪差异化) + 跨参数耦合。
-
-    emotion_gains: {情绪: 有符号强度 ∈[-1,1]}（入口 clamp 到 [-1,1]）。
-      1.0 = 该情绪按规则全量夸张（默认）；0 = 不对该情绪做额外塑造；
-      负值 = 反向抑制（把该情绪相关参数往中性 0 压，做扑克脸/死板人设）。
-    shaping: 用户塑造配置（boost 矩阵 + 耦合规则）；None = DEFAULT_SHAPING
-      （逐字等于硬编码基线，no-regression）。
-    最终值 = base * (global_gain if 吃全局 else 1) * (1 + Σ eg·强度·boost)，
-    再按 coupling 做跨参数耦合后处理（如 happy 时眼笑追嘴笑）。
-    """
-    sh = shaping if shaping is not None else DEFAULT_SHAPING
-    eg = {e: _clamp(x, -1.0, 1.0) for e, x in (emotion_gains or {}).items()}
-    out = {}
-    for p, v in base.items():
-        use_gg = PARAM_CONFIG.get(p, (False, {}))[0]
-        boosts = sh.boosts.get(p, {})
-        mult = global_gain if use_gg else 1.0
-        extra = 1.0
-        for e, b in boosts.items():
-            extra += eg.get(e, 1.0) * emo.get(e, 0.0) * b
-        lo, hi = RANGES.get(p, (-1.0, 1.0))
-        out[p] = _clamp(v * mult * extra, lo, hi)
-
-    # 跨参数耦合（输出空间后处理）：门情绪>0、且胜过 must_beat 里的竞争情绪时，把目标抬向
-    # k·|源正半轴|·门情绪·该情绪增益，只抬不压。源名前缀 '-' 取反（双极参数负半轴，如下垂）。
-    # eg 为负时 target≤0 自然跳过 → persona 抑制时不耦合抬，避免「一处被压、另一处抬」的不一致。
-    for tgt, src, gate, k, must_beat in sh.couplings:
-        g = emo.get(gate, 0.0)
-        if g <= 0 or tgt not in out:
-            continue
-        if any(emo.get(e, 0.0) > g for e in must_beat):   # 防串味：门情绪须压过共享特征的竞争情绪
-            continue
-        neg = src.startswith("-")
-        key = src[1:] if neg else src
-        if key not in out:
-            continue
-        mag = max(0.0, -out[key] if neg else out[key])
-        target = k * mag * g * eg.get(gate, 1.0)
-        if target > out[tgt]:
-            hi = RANGES.get(tgt, (-1.0, 1.0))[1]
-            out[tgt] = min(target, hi)
-    return out
-
-
 def bs_amplify(base_bs: dict, emo: dict, global_gain: float = 1.4,
                emotion_gains: dict = None, shaping: "Shaping | None" = None) -> dict:
-    """blendshape 空间的情绪 EQ：把放大后的 ARKit blendshape 喂给 3D 目标（VMC/OSC 输出）。
+    """blendshape 空间的情绪 EQ（EQ 唯一发生地）：原始 bs → 放大后的 bs'。
 
-    与 amplify 同构：值 × (全局 gain if 吃全局 else 1) × (1 + Σ eg·情绪·boost)，clamp 0..1。
+    值 × (全局 gain if 吃全局 else 1) × (1 + Σ eg·情绪·boost)，clamp 0..1；
+    之后按 BS_COUPLING 做跨形状耦合后处理（如 happy 时眼笑追嘴笑）。
     只处理 base_bs 里出现的键（检测器给的形状）；用户 bs_boosts 覆盖 BS_CONFIG 默认。
-    persona 负增益 = 压向 0，与 Live2D 空间语义一致。
+    persona 负增益 = 压向 0。
     """
     sh = shaping if shaping is not None else DEFAULT_SHAPING
     eg = {e: _clamp(x, -1.0, 1.0) for e, x in (emotion_gains or {}).items()}
@@ -487,4 +384,17 @@ def bs_amplify(base_bs: dict, emo: dict, global_gain: float = 1.4,
         for e, b in boosts.items():
             extra += eg.get(e, 1.0) * emo.get(e, 0.0) * b
         out[k] = _clamp01(v * mult * extra)
+
+    # BS 空间耦合（后处理）：门情绪>0、且压过 must_beat 竞争者时，把目标形状抬向
+    # k·源形状·门情绪·该情绪增益，只抬不压。eg 为负时 target=0 自然跳过
+    # → persona 抑制时不耦合抬，避免「一处被压、另一处抬」的不一致。
+    for tgt, src, gate, k, must_beat in sh.bs_couplings:
+        g = emo.get(gate, 0.0)
+        if g <= 0 or tgt not in out or src not in out:
+            continue
+        if any(emo.get(e, 0.0) > g for e in must_beat):   # 防串味：门情绪须压过共享特征的竞争情绪
+            continue
+        target = k * out[src] * g * eg.get(gate, 1.0)
+        if target > out[tgt]:
+            out[tgt] = min(target, 1.0)
     return out

@@ -10,8 +10,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from faceeq import engine
-from faceeq.capture import Frame, parse_phone_packet
+from faceeq import core
+from faceeq.frame import Frame
+from faceeq.inputs.phone import PhoneInput, parse_phone_packet
 from faceeq.mapping import base_map
 
 failures = []
@@ -83,19 +84,20 @@ ck(f"(e) EyeBallY=-0.1 (={params.get('ParamEyeBallY')})",
    abs(params.get("ParamEyeBallY", 0) + 0.1) < 1e-9)
 ck("(e) 空帧→空参数（webcam 无脸/手机断流一致）", base_map(Frame()) == {})
 
-# (f) engine 端到端：悲伤脸 blendshape（手机能读 AU15/AU1）→ sad 主导、有参数出
+# (f) 管线端到端：悲伤脸 blendshape（手机能读 AU15/AU1）→ sad 主导、有参数出
 emo = {"happy": 0.0, "angry": 0.0, "sad": 0.0, "surprised": 0.0, "disgust": 0.0}
-res = engine.process_frame(f_phone, 1.4, emo, None)
+pl = core.Pipeline(core.PipelineConfig(gain=1.4, emotion_gains=emo))
+res = pl.step(f_phone)
 ck(f"(f) 端到端有参数（{len(res.params)} 个）", len(res.params) > 0)
 ck(f"(f) sad 主导（dominant={res.dominant}）", res.dominant == "sad")
-ck(f"(f) bs_params 同步产出（{len(res.bs_params)} 形状，VMC 输出空间）", len(res.bs_params) >= 20)
+ck(f"(f) bs 同步产出（{len(res.bs)} 形状，VMC 输出空间）", len(res.bs) >= 20)
 
 # (g) 断流节流：无数据时 read() 出空帧且带 ~30fps 节流（防 GUI/CLI worker 忙循环烧 CPU）
 import time as _t
 
-from faceeq.capture import PhoneCapture
+from faceeq.inputs.phone import PhoneInput
 
-cap = PhoneCapture()
+cap = PhoneInput()
 cap._next_handshake = float("inf")   # 冒烟不发局域网发现广播
 t0 = _t.perf_counter()
 fr = cap.read()

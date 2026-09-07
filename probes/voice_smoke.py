@@ -10,8 +10,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from faceeq import engine, hotkeys, voice
-from faceeq.capture import Frame
+from faceeq import core, hotkeys, voice
+from faceeq.frame import Frame
 
 failures = []
 
@@ -82,11 +82,12 @@ fired3 = hotkeys.decide_triggers({"happy": 0.3}, CFG, {}, now=100.0)
 ck("(d) 低于阈值不触发", fired3 == [])
 ck("(d) 未启用/无热键不触发", hotkeys.decide_triggers(emo_hi, CFG, {}, 100.0)[:1] == [(7, "happy")])
 
-# (e) engine voice_bias 注入（additive + clamp 1.0）
+# (e) 管线 voice_bias 注入（additive + clamp 1.0）
 f = Frame(bs={"jawOpen": 0.1})
-r0 = engine.process_frame(f, 1.4, _Z := {e: 0.0 for e in
-                                         ["happy", "angry", "sad", "surprised", "disgust"]})
-r1 = engine.process_frame(f, 1.4, _Z, None, voice_bias={"happy": 0.5, "angry": 2.0})
+_Z = {e: 0.0 for e in ["happy", "angry", "sad", "surprised", "disgust"]}
+r0 = core.Pipeline(core.PipelineConfig(gain=1.4, emotion_gains=_Z)).step(f)
+r1 = core.Pipeline(core.PipelineConfig(gain=1.4, emotion_gains=_Z,
+                                       voice_bias={"happy": 0.5, "angry": 2.0})).step(f)
 ck(f"(e) voice_bias 抬 happy ({r1.emotions['happy']:.2f}==0.5)",
    abs(r1.emotions["happy"] - 0.5) < 1e-9)
 ck(f"(e) 注入 clamp 1.0 (angry={r1.emotions['angry']})", r1.emotions["angry"] == 1.0)

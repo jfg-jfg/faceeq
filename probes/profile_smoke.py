@@ -12,8 +12,8 @@ from types import SimpleNamespace as NS
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from faceeq import emotions, engine, profile
-from faceeq.capture import Frame
+from faceeq import core, emotions, profile
+from faceeq.frame import Frame
 
 _BSNAMES = [
     "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
@@ -107,50 +107,57 @@ ck("(b7) _MAX_POSE 键集 == EMOTIONS", set(emotions._MAX_POSE.keys()) == set(em
 ck("(b7) _MAX_POSE 值里的 AU 都在 RAW_KEYS",
    all(k in profile.RAW_KEYS for e in emotions._MAX_POSE.values() for k in e))
 
-# (f) 负增益 = persona 抑制（扑克脸）：相关参数往中性压、只抬不压的耦合停摆、eg 入口钳 [-1,1]
+# (f) 负增益 = persona 抑制（扑克脸）：压向 0、只抬不压的耦合停摆、eg 入口钳 [-1,1]
 _Z = {e: 0.0 for e in emotions.EMOTIONS}
-SMILE_BASE = {"ParamMouthForm": 0.6, "ParamEyeLSmile": 0.3, "ParamEyeRSmile": 0.3,
-              "ParamMouthOpenY": 0.2}
+SMILE_BS = {"mouthSmileLeft": 0.6, "mouthSmileRight": 0.6,
+            "eyeSquintLeft": 0.3, "eyeSquintRight": 0.3}
 EMO_HAPPY = {"happy": 0.8, "angry": 0.0, "sad": 0.0, "surprised": 0.0, "disgust": 0.0}
-a_zero = emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, _Z)                      # 不塑造基线
-a_pos = emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, {**_Z, "happy": 1.0})     # 全量夸张
-a_neg = emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, {**_Z, "happy": -1.0})    # 抑制
-ck(f"(f) happy 负增益压嘴笑向中性 ({a_neg['ParamMouthForm']:.3f} < 不塑造 {a_zero['ParamMouthForm']:.3f})",
-   0.0 <= a_neg["ParamMouthForm"] < a_zero["ParamMouthForm"])
-ck(f"(f) happy 正增益耦合抬眼笑 ({a_pos['ParamEyeLSmile']:.3f} > 基础 0.3)",
-   a_pos["ParamEyeLSmile"] > 0.3)
-ck(f"(f) happy 负增益停耦合（眼笑不再抬, ={a_neg['ParamEyeLSmile']:.3f}）",
-   abs(a_neg["ParamEyeLSmile"] - 0.3) < 1e-9)
+a_zero = emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, _Z)                  # 不塑造基线
+a_pos = emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, {**_Z, "happy": 1.0})  # 全量夸张
+a_neg = emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, {**_Z, "happy": -1.0})  # 抑制
+ck(f"(f) happy 正增益抬嘴笑 ({a_pos['mouthSmileLeft']:.3f} > 基线 {a_zero['mouthSmileLeft']:.3f})",
+   a_pos["mouthSmileLeft"] > a_zero["mouthSmileLeft"])
+ck(f"(f) happy 负增益压嘴笑向 0 ({a_neg['mouthSmileLeft']:.3f} < 基线, >=0)",
+   0.0 <= a_neg["mouthSmileLeft"] < a_zero["mouthSmileLeft"])
+ck(f"(f) happy 负增益停耦合（眼笑不再被耦合抬, {a_neg['eyeSquintLeft']:.3f} < {a_zero['eyeSquintLeft']:.3f}）",
+   a_neg["eyeSquintLeft"] < a_zero["eyeSquintLeft"])
 EMO_SMALL = {"happy": 0.2, "angry": 0.0, "sad": 0.0, "surprised": 0.0, "disgust": 0.0}
-a_big = emotions.amplify(SMILE_BASE, EMO_SMALL, 1.4, {**_Z, "happy": 5.0})
-a_one = emotions.amplify(SMILE_BASE, EMO_SMALL, 1.4, {**_Z, "happy": 1.0})
+a_big = emotions.bs_amplify(SMILE_BS, EMO_SMALL, 1.4, {**_Z, "happy": 5.0})
+a_one = emotions.bs_amplify(SMILE_BS, EMO_SMALL, 1.4, {**_Z, "happy": 1.0})
 ck("(f) eg 入口钳制 [-1,1] (5.0 == 1.0)",
-   abs(a_big["ParamMouthForm"] - a_one["ParamMouthForm"]) < 1e-12)
+   abs(a_big["mouthSmileLeft"] - a_one["mouthSmileLeft"]) < 1e-12)
 
-# (g) 塑造配置（Phase 2a）：默认==硬编码基线（no-regression 钉死）、自定义生效、序列化往返、试表情
+# (g) 塑造配置：默认==硬编码基线（no-regression 钉死）、自定义生效、序列化往返、试表情
 sh_d = emotions.Shaping()
-ck("(g) 默认 Shaping 输出 == amplify 无参路径",
-   emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, _Z, sh_d)
-   == emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, _Z))
+ck("(g) 默认 Shaping 输出 == bs_amplify 无参路径",
+   emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, _Z, sh_d)
+   == emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, _Z))
 d = emotions.shaping_to_dict(sh_d)
 sh_rt = emotions.shaping_from_dict(d)
-ck("(g) shaping 序列化往返输出一致（含 4 条默认耦合）",
+ck("(g) shaping 序列化往返输出一致（含默认耦合）",
    sh_rt is not None
-   and emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, _Z, sh_rt)
-   == emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, _Z, sh_d))
+   and emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, _Z, sh_rt)
+   == emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, _Z, sh_d))
 EG_H = {**_Z, "happy": 1.0}
-out_def = emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, EG_H)          # 默认塑造
-sh_cus = emotions.Shaping()                                            # 关 happy 嘴部 boost + 全部耦合
-sh_cus.boosts["ParamMouthForm"] = {e: 0.0 for e in emotions.EMOTIONS}
-sh_cus.couplings = []
-out_cus = emotions.amplify(SMILE_BASE, EMO_HAPPY, 1.4, EG_H, sh_cus)
-ck(f"(g) 自定义: 关 happy boost 后嘴笑回落 ({out_cus['ParamMouthForm']:.3f} < 默认 {out_def['ParamMouthForm']:.3f})",
-   out_cus["ParamMouthForm"] < out_def["ParamMouthForm"])
-ck(f"(g) 自定义: 关耦合后眼笑保持基值 (={out_cus['ParamEyeLSmile']:.3f})",
-   abs(out_cus["ParamEyeLSmile"] - 0.3) < 1e-9)
+out_def = emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, EG_H)          # 默认塑造
+sh_cus = emotions.Shaping()                                            # 关嘴笑 boost + 全部耦合
+sh_cus.bs_boosts["mouthSmileLeft"] = {e: 0.0 for e in emotions.EMOTIONS}
+sh_cus.bs_couplings = []
+out_cus = emotions.bs_amplify(SMILE_BS, EMO_HAPPY, 1.4, EG_H, sh_cus)
+ck(f"(g) 自定义: 关 happy boost 后嘴笑回落 ({out_cus['mouthSmileLeft']:.3f} < 默认 {out_def['mouthSmileLeft']:.3f})",
+   out_cus["mouthSmileLeft"] < out_def["mouthSmileLeft"])
+ck(f"(g) 自定义: 关耦合后眼笑不再被抬 ({out_cus['eyeSquintLeft']:.3f} < {out_def['eyeSquintLeft']:.3f})",
+   out_cus["eyeSquintLeft"] < out_def["eyeSquintLeft"])
 sh_from_none = emotions.shaping_from_dict(None)
 ck("(g) shaping_from_dict(None/空)=None→引擎用默认", sh_from_none is None)
-tp = engine.process_frame(Frame(), 1.4, _Z, None, None, ("happy", 0.8))
+ck("(g) 旧版预设兼容: param_boosts/couplings 静默忽略, 保 bs_boosts",
+   (emotions.shaping_from_dict({"param_boosts": {"X": {"happy": 9.0}},
+                                "couplings": [{"target": "a", "source": "b",
+                                               "gate": "happy", "k": 1}],
+                                "bs_boosts": {"mouthSmileLeft": {"happy": 0.9}}})
+    .bs_boosts["mouthSmileLeft"]["happy"]) == 0.9)
+pl_t = core.Pipeline(core.PipelineConfig(test_emotion=("happy", 0.8)))
+tp = pl_t.step(Frame())
 ck(f"(g) 试表情: dom={tp.dominant} 有参数={len(tp.params)>0} face_found={tp.face_found}",
    tp.dominant == "happy" and len(tp.params) > 0 and tp.face_found)
 
@@ -170,10 +177,11 @@ ck(f"(h) clamp01: happy {emo3['happy']:.2f}<=1.0", 0.0 <= emo3["happy"] <= 1.0)
 emo4, _ = emotions.apply_custom(emo0, {"冷": {"happy": -0.5}}, {"冷": 1.0})
 ck(f"(h) 负权重压情绪: happy {emo4['happy']:.2f}==0 (不越到负)", emo4["happy"] == 0.0)
 f_ce = Frame(bs={"jawOpen": 0.1})
-r_ce = engine.process_frame(f_ce, 1.4, _Z, None, None, None, EXPRS, {"害羞": 1.0})
+pl_ce = core.Pipeline(core.PipelineConfig(custom_exprs=EXPRS, custom_act={"害羞": 1.0}))
+r_ce = pl_ce.step(f_ce)
 ck(f"(h) 端到端: dom={r_ce.dominant} 参数={len(r_ce.params)>0} face={r_ce.face_found}",
    r_ce.dominant == "害羞" and len(r_ce.params) > 0 and r_ce.face_found)
-ck("(h) 端到端 bs_params 同步产出（VMC/OSC 输出空间）", len(r_ce.bs_params) > 0)
+ck("(h) 端到端 bs 同步产出（VMC/OSC 输出空间）", len(r_ce.bs) > 0)
 
 # (d) load_profile
 ck("(d) load_profile(None)=None", profile.load_profile(None) is None)

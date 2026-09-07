@@ -10,9 +10,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from faceeq import emotions, engine
-from faceeq.capture import Frame
-from faceeq.output import VmcOutput, OscRawOutput, VTSOutput, create_output
+from faceeq import emotions, core
+from faceeq.frame import Frame
+from faceeq.outputs import VmcOutput, OscRawOutput, VTSOutput, create_output
 
 failures = []
 
@@ -108,7 +108,7 @@ ck(f"(e) 映射模式只发映射项 ({msgs[0].address})",
    len(msgs) == 1 and msgs[0].address == "/avatar/parameters/JawOpen")
 rx2.close()
 
-# (f) 工厂 + FrameResult 双输出空间
+# (f) 工厂 + StepResult 双输出空间（单趟管线）
 ck("(f) create_output('vts') → VTSOutput", isinstance(create_output("vts"), VTSOutput))
 try:
     create_output("xxx")
@@ -116,10 +116,13 @@ try:
 except ValueError:
     ck("(f) 未知 kind raise ValueError", True)
 f_phone = Frame(bs={"jawOpen": 0.1, "mouthSmileLeft": 0.2}, rot=(5.0, 0.0, 0.0))
-res = engine.process_frame(f_phone, 1.4, _Z, None)
-ck(f"(f) FrameResult 双空间: params {len(res.params)} + bs {len(res.bs_params)}",
-   len(res.params) > 0 and len(res.bs_params) > 0)
+pl = core.Pipeline(core.PipelineConfig(gain=1.4, emotion_gains=_Z))
+res = pl.step(f_phone)
+ck(f"(f) StepResult 双空间: params {len(res.params)} + bs {len(res.bs)}",
+   len(res.params) > 0 and len(res.bs) > 0)
 ck(f"(f) emotions 向量在结果里（{sorted(res.emotions)}）", len(res.emotions) == 5)
+ck(f"(f) 头旋转直传 ParamAngleX=5.0 (={res.params.get('ParamAngleX')})",
+   abs(res.params.get("ParamAngleX", 0) - 5.0) < 1e-9)
 
 print("\n" + ("ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}"))
 sys.exit(1 if failures else 0)
