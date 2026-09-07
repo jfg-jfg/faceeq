@@ -22,6 +22,7 @@ import tkinter as tk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from faceeq import emotions, profile
+from faceeq.i18n import tr
 from faceeq.inputs.phone import PHONE_PORT
 from faceeq.inputs import create_input
 
@@ -158,7 +159,7 @@ class _Wizard:
         self.out_path = os.path.join("profiles", "calibration.json")
         self._frame_bs = {}
 
-        root.title("FaceEQ calibrate (SPACE=采样 / ESC=跳过 / q=退出)")
+        root.title(tr("FaceEQ calibrate (SPACE=采样 / ESC=跳过 / q=退出)"))
         left = tk.Frame(root, width=340, height=panel_h, bg="#101010")
         left.pack(side="left", fill="y")
         self._v_progress = self._lbl(left, 22, "#50dc50", 16)
@@ -190,11 +191,11 @@ class _Wizard:
         d = ImageDraw.Draw(img)
         W, H = self.panel_w, self.panel_h
         d.text((18, 28), zh_title, font=_font(36), fill=(80, 220, 80))
-        d.text((18, 110), "做这个表情：", font=_font(24), fill=(150, 150, 150))
+        d.text((18, 110), tr("做这个表情："), font=_font(24), fill=(150, 150, 150))
         d.text((18, 150), zh_desc, font=_font(40), fill=(235, 235, 235))
         d.text((18, 235), en_desc, font=_font(22), fill=(0, 220, 220))
-        d.text((18, H - 110), "保持住表情", font=_font(26), fill=(220, 220, 220))
-        d.text((18, H - 60), "→ 按 SPACE 采样", font=_font(24), fill=(150, 150, 150))
+        d.text((18, H - 110), tr("保持住表情"), font=_font(26), fill=(220, 220, 220))
+        d.text((18, H - 60), tr("→ 按 SPACE 采样"), font=_font(24), fill=(150, 150, 150))
         self._photo = self._ImageTk.PhotoImage(img)
         self._canvas.configure(image=self._photo)
 
@@ -235,8 +236,8 @@ class _Wizard:
             raw = emotions.signals_with_raw(f.bs)[1] if f.bs else {}
             self._v_progress.configure(text="[{}/{}] {}".format(
                 self.i + 1, len(self.poses), key_name.upper() if key_name else "DONE"))
-            self._v_recv.configure(text="receiving ..." if f.bs
-                                   else "waiting for data ... (check app IP / firewall)")
+            self._v_recv.configure(text=tr("receiving ...") if f.bs
+                                   else tr("waiting for data ... (check app IP / firewall)"))
             if key_name and key_name != "neutral":
                 self._v_live.configure(text="live {} = {:.3f}".format(key_name, raw.get(key_name, 0.0)))
             else:

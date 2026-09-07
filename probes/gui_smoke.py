@@ -27,6 +27,14 @@ def ck(name, cond):
 app = QApplication(sys.argv)
 win = gui.MainWindow()
 
+# 0. i18n：tr 在 en 模式命中映射、zh 模式原样；控件树扫描幂等
+from faceeq import i18n
+i18n.set_lang("en")
+ck("tr(en) 命中映射", i18n.tr("端口:") == "Port:")
+ck("tr(en) 未收录原样", i18n.tr("不存在串xyz") == "不存在串xyz")
+i18n.set_lang("zh")
+ck("tr(zh) 原样", i18n.tr("端口:") == "端口:")
+
 # 1. 主窗口基础：情绪滑块在、有几何尺寸
 ck("情绪滑块 5 个已建", len(win.emo_sliders) == 5)
 geo = win.emo_sliders["happy"].geometry()
@@ -134,8 +142,10 @@ print(f"[info] 窗口高 {win.height()}，central 高 {central_h}，布局最小
 ck(f"内容接近完整（central {central_h} >= 需求 {need}-24）", central_h >= need - 24)
 
 # 清理测试产物，不污染工作区
+i18n.set_lang("zh")
 try:
     os.remove("hotkey_triggers.json")
+    os.remove("lang.txt")
 except OSError:
     pass
 
