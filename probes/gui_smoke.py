@@ -32,12 +32,19 @@ ck("情绪滑块 5 个已建", len(win.emo_sliders) == 5)
 geo = win.emo_sliders["happy"].geometry()
 ck(f"happy 滑块几何非零 {geo.width()}x{geo.height()}", geo.width() > 0 and geo.height() > 0)
 
-# 2. 输出目标组 + 信号监视器
-ck("输出目标下拉 3 项", win.out_combo.count() == 3)
-win.out_combo.setCurrentIndex(1)   # vmc
-ck(f"切 VMC 后端口默认 {win.out_port.value()}==39540", win.out_port.value() == 39540)
-ck("Params 感知输出切换", win.params.snapshot().output_kind == "vmc")
-win.out_combo.setCurrentIndex(0)
+# 2. 输入源 + 输出目标组（多选）+ 信号监视器
+ck("输入源下拉 2 项（phone/vmc）", win.input_combo.count() == 2)
+win.input_combo.setCurrentIndex(1)   # vmc
+ck(f"切 VMC 后端口默认 {win.input_port.value()}==39539", win.input_port.value() == 39539)
+win.input_combo.setCurrentIndex(0)
+ck("输入源写入 Params", win.params.snapshot().input_kind == "phone")
+ck("输出目标勾选组 3 项", len(win.out_checks) == 3)
+ck("默认勾选 vts", win.out_checks["vts"].isChecked()
+   and win.params.snapshot().output_kinds == ["vts"])
+win.out_checks["vmc"].setChecked(True)
+ck(f"勾 vmc 后 Params 感知多输出（{win.params.snapshot().output_kinds}）",
+   set(win.params.snapshot().output_kinds) == {"vts", "vmc"})
+win.out_checks["vmc"].setChecked(False)
 ck("输出目标提示文案非空", len(win.out_hint.text()) > 10)
 ck("信号监视条 5 根", len(win._emo_bars) == 5)
 win._on_emo_vals({"happy": 0.8, "sad": 0.25, "angry": 1.5})   # 越界值应被钳制
@@ -50,19 +57,19 @@ defs, act = snap.custom_exprs, snap.custom_act
 ck(f"自定义表情定义 3 个（实际 {len(defs)}: {sorted(defs)}）", len(defs) == 3)
 ck(f"自定义表情行已建 {len(win._ce_rows)}", len(win._ce_rows) == len(defs))
 
-# 4. 打开高级塑造对话框（双标签页：Live2D + BlendShape）
+# 4. 打开高级塑造对话框（单 BlendShape 矩阵 + BS 耦合）
 try:
     win._open_shaping()
     dlg = win._shape_dlg
     ck("高级塑造对话框打开", dlg is not None)
-    ck(f"Live2D 矩阵单元格 {len(dlg._cells)}（14 参数×5）", len(dlg._cells) == 70)
     ck(f"BlendShape 矩阵单元格 {len(dlg._bs_cells)}（{len(emotions.BS_CONFIG)} 形状×5）",
        len(dlg._bs_cells) == 5 * len(emotions.BS_CONFIG))
-    ck("耦合行 4 条", len(dlg._coup_checks) == 4)
+    ck(f"耦合行 {len(dlg._coup_checks)} 条（BS_COUPLING）",
+       len(dlg._coup_checks) == len(emotions.BS_COUPLING))
     dlg._reset()
     dlg._apply()
     sh = win.params.snapshot().shaping
-    # 语义：空 boost 键不进用户配置（amplify 回退 BS_CONFIG 默认），有默认 boost 的键保留
+    # 语义：空 boost 键不进用户配置（bs_amplify 回退 BS_CONFIG 默认），有默认 boost 的键保留
     ck("塑造应用保留默认 boost 键（mouthSmileLeft happy=0.5）",
        sh.bs_boosts.get("mouthSmileLeft", {}).get("happy") == 0.5)
 except Exception as e:

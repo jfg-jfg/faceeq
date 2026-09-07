@@ -2,7 +2,7 @@
 
 资源路径：源码运行取 CWD；PyInstaller 打包后取 _internal（sys._MEIPASS）里的只读资源。
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import os
 import sys

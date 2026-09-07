@@ -2,6 +2,34 @@
 
 所有重要变更记录于此。格式参考 Keep a Changelog；版本遵循语义化（首发从 0.1.0 起）。
 
+## [0.2.0] — 2026-09-07
+
+**纯协议 EQ 中间件**：FaceEQ 不再做面捕，只做 EQ 层——「任何面捕 ↔ FaceEQ ↔ 任何引擎」。
+
+### 架构（breaking）
+- **EQ 单趟换轴**：EQ 只作用在 ARKit blendshape 空间，Live2D 参数 = EQ 后 bs 的映射
+  产物（删 Live2D 空间平行放大 `amplify`/`PARAM_CONFIG`/`COUPLING`，塑造对话框只剩
+  单 BlendShape 矩阵）；
+- **删除本地面捕**：mediapipe/webcam 采集、模型文件、CLI `--source webcam`、GUI 摄像头
+  下拉全部移除——安装包 340MB → 约 160MB，摄像头冲突、RGB 欠读免责声明随之消失；
+- **平滑收进核内**（`core.Pipeline.step`，状态显式），worker 变薄壳；
+- **多输出并发**：输出目标从单选变勾选组（VTS/VMC/OSC 任意组合同时发）；
+- **VMC 输入（新）**：接收 VSeeFace/Warudo 等 PC 追踪软件的 VMC blendshape 流
+  （端口 39539）；VTS 重连逻辑收回适配器内部。
+
+### 修复 / 调权
+- **signals 调权**：皱鼻时压制 angry（TrueDepth 实测皱鼻伴随皱眉，angry 0.88 曾盖过
+  disgust 0.64 → 现 disgust 抢回主导）；
+- **打包版校准修复**：frozen exe 的「校准」按钮此前会误拉起第二个 GUI，现走内嵌校准模式。
+
+### 兼容性
+- 旧预设 v2 的 `param_boosts`/`couplings`（Live2D 空间）加载时静默忽略，
+  EQ 增益/`bs_boosts`/自定义表情照常继承；塑造效果与 v0.1.0 存在可感知的细微差异。
+
+### 验收（docs/acceptance-sprint1.md）
+- iPad TrueDepth 离线实测：撇嘴 sad=0.82、皱鼻 disgust=0.64、微笑 happy=1.00——
+  「TrueDepth 下 sad/disgust 可用」有实测背书。
+
 ## [0.1.0] — 2026-09-07
 
 首个公开版本。

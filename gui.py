@@ -1,8 +1,8 @@
 """FaceEQ GUI 控制面板（PySide6 + QSS，VTS 风格深色蓝高亮）。
 
 用户面入口：滑块实时调每情绪增强/抑制 + 全局 gain + 平滑，按钮触发校准/开始/停止。
-开始前提示关掉 VTS 摄像头让 FaceEQ 独占（避免 1fps 冲突）。核心引擎不变，GUI 是包装层。
-CLI main.py 保留给自动化/调试。
+v0.2.0 纯协议中间件：输入=面捕 app/PC 追踪软件的协议流（不做本地面捕），
+输出=VTS/VMC/OSC 可多选并发。GUI 是 core.Pipeline 之上的薄包装层。CLI main.py 保留给自动化。
 
 跑：
     PYTHONUTF8=1 .venv/Scripts/python.exe gui.py
@@ -26,16 +26,16 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QPushButton, QScrollArea, QSlider, QSpinBox,
                                QTableWidget, QTabWidget, QVBoxLayout, QWidget)
 
-from faceeq import emotions, engine, profile as profile_mod, resource_path
+from faceeq import core, emotions, profile as profile_mod, resource_path
 from faceeq import __version__ as APP_VERSION
-from faceeq.capture import PHONE_PORT, list_sources, open_source
+from faceeq.core import Pipeline, PipelineConfig
 from faceeq.hotkeys import (decide_triggers, load_trigger_config,
                             sanitize_trigger_config, save_trigger_config)
-from faceeq.mapping import base_map
-from faceeq.output import create_output
-from faceeq.smooth import Smoother
+from faceeq.inputs import create_input
+from faceeq.inputs.phone import PHONE_PORT
+from faceeq.inputs.vmc import VMC_INPUT_PORT
+from faceeq.outputs import create_output
 from faceeq.voice import VoiceCapture, list_input_devices
-from faceeq.vts_bridge import VTSBridge
 
 DEFAULT_PROFILE = os.path.join("profiles", "calibration.json")
 PRESETS_DIR = "presets"
@@ -253,7 +253,9 @@ class Snapshot:
     test: object = None
     custom_exprs: dict = None
     custom_act: dict = None
-    output_kind: str = "vts"
+    input_kind: str = "phone"
+    input_port: int = PHONE_PORT
+    output_kinds: list = None
     output_host: str = "127.0.0.1"
     output_port: int = 39540
     voice_enabled: bool = False
@@ -271,12 +273,13 @@ class Params:
         self.emotion_gains = {e: 0.0 for e in emotions.EMOTIONS}
         self.smooth = 0.4
         self.calib = None
-        self.source = 0
-        self.shaping = emotions.DEFAULT_SHAPING.copy()   # 塑造配置（boost 矩阵+耦合）
+        self.input_kind = "phone"
+        self.input_port = PHONE_PORT
+        self.shaping = emotions.DEFAULT_SHAPING.copy()   # 塑造配置（BS 矩阵+耦合）
         self.test = None                                  # (情绪, 强度, 到期时刻) | None
         self.custom_exprs = {}                            # {名字: {情绪: 权重}}
         self.custom_act = {}                              # {名字: 激活度 0..1}
-        self.output_kind = "vts"
+        self.output_kinds = ["vts"]
         self.output_host = "127.0.0.1"
         self.output_port = 39540
         self.voice_enabled = False
@@ -293,7 +296,9 @@ class Params:
                             shaping=self.shaping, test=self.test,
                             custom_exprs=dict(self.custom_exprs),
                             custom_act=dict(self.custom_act),
-                            output_kind=self.output_kind,
+                            input_kind=self.input_kind,
+                            input_port=self.input_port,
+                            output_kinds=list(self.output_kinds),
                             output_host=self.output_host,
                             output_port=self.output_port,
                             voice_enabled=self.voice_enabled,
@@ -332,9 +337,9 @@ class Params:
         with self._lock:
             self.custom_act[name] = v
 
-    def set_output(self, kind, host, port):
+    def set_output(self, kinds, host, port):
         with self._lock:
-            self.output_kind = kind
+            self.output_kinds = list(kinds)
             self.output_host = host
             self.output_port = port
 
@@ -363,7 +368,7 @@ class Params:
 
 
 class FaceEQWorker(QObject):
-    """跑在 QThread，移植 main.py 主循环：capture→engine→Smoother→输出适配器。
+    """跑在 QThread：input.read → core.Pipeline.step → 各输出适配器注入。
     每帧从 Params 读快照（滑块/塑造/输出目标/语音/触发实时生效）。"""
     status = Signal(str)
     dominant = Signal(str)
@@ -378,6 +383,7 @@ class FaceEQWorker(QObject):
         super().__init__()
         self._params = params
         self._running = False
+        self._stale_state = set()
 
     def stop(self):
         self._running = False
@@ -385,30 +391,34 @@ class FaceEQWorker(QObject):
     @Slot()
     def run(self):
         cap = None
-        adapter = None
+        outputs = []      # [kind, adapter, enabled]
         voice = None
+        down = set()      # 已停用的输出 kind
         try:
             snap = self._params.snapshot()
-            source = self._params.source
-            kind = snap.output_kind
-            self.status.emit("等待手机 UDP 数据…" if source == "phone" else "正在打开摄像头…")
-            cap = open_source(source)
-            is_phone = (source == "phone")
-            phone_ok = False
-            self.status.emit("正在连接输出目标…" if kind != "vts" else "正在连接 VTS…")
-            adapter = create_output(kind, snap.output_host, snap.output_port)
-            adapter.start()                      # vts=connect+auth+discover；vmc/osc=无连接
-            if kind == "vts" and hasattr(adapter, "list_hotkeys"):
-                try:
-                    self.hotkeys_sig.emit(adapter.list_hotkeys())
-                except Exception:
-                    pass
-            smoother = Smoother(snap.smooth)
-            self.status.emit(f"运行中（输出：{kind}）")
-            last_params = {}
-            last_bs = {}
-            last_emo = {}
-            last_fire = {}                       # 情绪 → 上次触发热键时刻
+            input_kind = snap.input_kind
+            self.status.emit("等待面捕数据…（手机/平板 app 或发送端软件开始推送）")
+            cap = create_input(input_kind, port=snap.input_port)
+            cap.start()
+            self.status.emit("正在连接输出目标…")
+            for kind in snap.output_kinds:
+                port = snap.output_port
+                if kind == "osc" and "vmc" in snap.output_kinds:
+                    port = 9000     # vmc/osc 同选中时各用各的默认口
+                adapter = create_output(kind, snap.output_host, port)
+                adapter.start()              # vts=connect+auth+discover；vmc/osc=无连接
+                outputs.append([kind, adapter, True])
+                if kind == "vts" and hasattr(adapter, "list_hotkeys"):
+                    try:
+                        self.hotkeys_sig.emit(adapter.list_hotkeys())
+                    except Exception:
+                        pass
+            active = "+".join(k for k, _a, _e in outputs) or "（无）"
+            pipeline = Pipeline(PipelineConfig(gain=snap.gain, smooth=snap.smooth,
+                                               emotion_gains=snap.emotion_gains,
+                                               calib=snap.calib, shaping=snap.shaping))
+            self.status.emit(f"运行中（输出：{active}）")
+            last_fire = {}                   # 情绪 → 上次触发热键时刻
             frames = 0
             timer = time.time()
             emo_timer = time.time()
@@ -432,7 +442,7 @@ class FaceEQWorker(QObject):
                 elif voice is not None:
                     voice.close()
                     voice = None
-                    self.status.emit(f"运行中（输出：{kind}）")
+                    self.status.emit(f"运行中（输出：{active}）")
                 vb = voice.read_bias(s.voice_strength) if voice else None
                 te = None
                 if s.test:                        # 「试表情」到期清理
@@ -441,67 +451,66 @@ class FaceEQWorker(QObject):
                         te = (t_name, t_strength)
                     else:
                         self._params.clear_test()
-                res = engine.process_frame(
-                    f, s.gain, s.emotion_gains, s.calib, shaping=s.shaping,
-                    test_emotion=te, custom_exprs=s.custom_exprs, custom_act=s.custom_act,
-                    voice_bias=vb)
-                if res.params:
-                    last_params = res.params
-                    last_bs = res.bs_params
-                    last_emo = res.emotions
-                smoother.set_strength(s.smooth)      # 实时改平滑
-                if last_params:
+                # 控制面快照 → 管线配置（数据面全部在 core.Pipeline 内）
+                pipeline.cfg.gain = s.gain
+                pipeline.cfg.smooth = s.smooth
+                pipeline.cfg.emotion_gains = s.emotion_gains
+                pipeline.cfg.calib = s.calib
+                pipeline.cfg.shaping = s.shaping
+                pipeline.cfg.test_emotion = te
+                pipeline.cfg.custom_exprs = s.custom_exprs
+                pipeline.cfg.custom_act = s.custom_act
+                pipeline.cfg.voice_bias = vb
+                res = pipeline.step(f)
+                # —— 多输出并发注入；重连在适配器内部，重试耗尽才停用该项 ——
+                for entry in outputs:
+                    kind, adapter, enabled = entry
+                    if not enabled:
+                        continue
                     try:
-                        adapter.inject(smoother.step(last_params),
-                                       smoother.step(last_bs), face_found=res.face_found)
-                    except Exception:
-                        # 目标掉线（仅 VTS 会抛）→ 重连（指数退避，3 次）
-                        self.status.emit("输出目标断开，重连中…")
-                        reconnected = False
-                        for attempt in range(3):
-                            time.sleep(2 ** attempt)  # 1s, 2s, 4s
-                            try:
-                                try:
-                                    adapter.close()
-                                except Exception:
-                                    pass
-                                adapter = create_output("vts", None, None)
-                                adapter.start()
-                                reconnected = True
-                                self.status.emit("输出目标已重连。")
-                                break
-                            except Exception:
-                                continue
-                        if not reconnected:
-                            raise RuntimeError("输出目标重连失败（重试 3 次后放弃）。")
+                        adapter.inject(res.params, res.bs, face_found=res.face_found)
+                        if kind in down:
+                            down.discard(kind)
+                            entry[2] = True
+                            self.status.emit(f"运行中（输出：{active}）· {kind} 已恢复")
+                    except ConnectionError as e:
+                        if kind not in down:
+                            down.add(kind)
+                            entry[2] = False
+                            self.status.emit(f"[{kind}] 重连失败，已停用该输出（{e}）；停止后重开可重试")
                 # —— 情绪触发 VTS 热键（阈值 + 冷却，decide_triggers 纯函数判定）——
                 now = time.time()
-                if kind == "vts" and s.hotkey_triggers and res.emotions:
-                    for hid, e in decide_triggers(res.emotions, s.hotkey_triggers,
-                                                  last_fire, now):
-                        try:
-                            adapter.trigger_hotkey(hid)
-                            last_fire[e] = now
-                        except Exception:
-                            pass
+                if s.hotkey_triggers and res.emotions:
+                    for kind, adapter, enabled in outputs:
+                        if kind != "vts" or not enabled:
+                            continue
+                        for hid, e in decide_triggers(res.emotions, s.hotkey_triggers,
+                                                      last_fire, now):
+                            try:
+                                adapter.trigger_hotkey(hid)
+                                last_fire[e] = now
+                            except Exception:
+                                pass
                 frames += 1
                 now = time.time()
                 if now - emo_timer >= 0.25:      # 信号监视器节流 ~4Hz
                     emo_timer = now
-                    self.emo_vals.emit(dict(last_emo))
+                    self.emo_vals.emit(dict(res.emotions))
                 if now - timer >= 1.0:
                     self.fps.emit(frames)
                     if res.face_found and res.dominant and res.dominant != last_dom:
                         last_dom = res.dominant
                         self.dominant.emit(res.dominant)
-                    if is_phone:   # 手机源状态提示（只在状态翻转时报）
+                    if hasattr(cap, "is_stale"):  # 断流状态提示（只在翻转时报）
                         stale = cap.is_stale()
-                        if not stale and not phone_ok:
-                            phone_ok = True
-                            self.status.emit(f"运行中（输出 {kind}，手机源）")
-                        elif stale and phone_ok:
-                            phone_ok = False
-                            self.status.emit("手机数据断流（检查 app 发送与防火墙）")
+                        if not stale and input_kind not in down and "wait" in self._stale_state:
+                            self._stale_state.discard("wait")
+                            self.status.emit(f"运行中（输出 {active}，{input_kind} 源）")
+                        elif stale and "wait" not in self._stale_state:
+                            self._stale_state.add("wait")
+                            hint = ("手机数据断流（检查 app 发送与防火墙）" if input_kind == "phone"
+                                    else "VMC 数据断流（检查发送端软件与端口）")
+                            self.status.emit(hint)
                     frames = 0
                     timer = now
         except Exception as e:
@@ -517,7 +526,7 @@ class FaceEQWorker(QObject):
                     voice.close()
                 except Exception:
                     pass
-            if adapter:
+            for _kind, adapter, _en in outputs:
                 try:
                     adapter.close()
                 except Exception:
@@ -530,69 +539,74 @@ class CalibrateRunner(QObject):
     """在 QThread 里跑校准子进程，不阻塞 GUI。完成后 emit finished(ok)——ok=子进程正常退出。"""
     finished = Signal(bool)
 
-    def __init__(self, source):
+    def __init__(self, source, port):
         super().__init__()
         self._source = source
+        self._port = port
 
     @Slot()
     def run(self):
-        calibrate_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "probes", "calibrate.py")
-        rc = subprocess.run([sys.executable, calibrate_path, "--source", str(self._source)],
-                            check=False).returncode
+        if getattr(sys, "frozen", False):
+            # 打包版：--calibrate 走 FaceEQ.exe 内嵌校准（faceeq/calibrate.py）
+            cmd = [sys.executable, "--calibrate", "--source", str(self._source),
+                   "--phone-port" if self._source == "phone" else "--vmc-port",
+                   str(self._port)]
+        else:
+            calibrate_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "probes", "calibrate.py")
+            cmd = [sys.executable, calibrate_path, "--source", str(self._source),
+                   "--phone-port" if self._source == "phone" else "--vmc-port",
+                   str(self._port)]
+        rc = subprocess.run(cmd, check=False).returncode
         self.finished.emit(rc == 0)
 
 
 class ShapingDialog(QDialog):
-    """高级塑造编辑器：参数×情绪 boost 矩阵 + 耦合开关/强度 + 试表情 + 恢复默认。
+    """高级塑造编辑器：BlendShape×情绪 boost 矩阵 + BS 耦合开关/强度 + 试表情 + 恢复默认。
 
-    非模态——边调边在 VTS 里看效果。任何修改即时写入 Params（worker 逐帧读快照，
-    不用重启）。「试表情」让引擎用参考底 pose + 合成情绪值跑 1.5 秒，不照镜子也能
-    预览塑造效果。who-eats-global-gain 是结构项，不在此面板暴露。
+    v0.2.0 单趟管线：EQ 只作用在 blendshape 空间（VTS 的 Live2D 参数是映射产物），
+    所以只有一个矩阵。非模态——边调边在目标软件里看效果；任何修改即时写入 Params。
+    「试表情」让引擎用参考底 bs + 合成情绪值跑 1.5 秒。谁吃全局 gain 是结构项，不在此面板暴露。
     """
 
     def __init__(self, params, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("高级塑造 · 情绪→参数增强 / 耦合")
+        self.setWindowTitle("高级塑造 · 情绪→BlendShape 增强 / 耦合")
         self.setMinimumWidth(580)
         self.resize(600, 640)
         self._params = params
-        self._base_couplings = [tuple(c) for c in emotions.DEFAULT_SHAPING.couplings]
+        self._base_couplings = [tuple(c) for c in emotions.BS_COUPLING]
         cur = params.snapshot().shaping
         # 当前塑造里不在默认集的耦合（如手工 JSON 加的）原样保留，不在本面板编辑
-        self._extra_couplings = [tuple(c) for c in cur.couplings
+        self._extra_couplings = [tuple(c) for c in cur.bs_couplings
                                  if not any(c[:3] == b[:3] for b in self._base_couplings)]
 
         root = QVBoxLayout(self)
-        self._tabs = QTabWidget()
 
-        # —— Tab 1: Live2D 参数（VTS 输出）——
-        tab1 = QWidget()
-        t1 = QVBoxLayout(tab1)
-        gb = QGroupBox("情绪→参数 附加放大系数（0=不塑造该组合；正=增强；负=反向压）")
+        gb = QGroupBox("情绪→BlendShape 附加放大系数（未列出的形状 1:1 透传）")
         QVBoxLayout(gb)
-        params_order = list(emotions.DEFAULT_SHAPING.boosts.keys())
-        self._table = QTableWidget(len(params_order), len(emotions.EMOTIONS))
-        self._table.setHorizontalHeaderLabels(emotions.EMOTIONS)
-        self._table.setVerticalHeaderLabels([p.replace("Param", "") for p in params_order])
-        self._cells = {}
-        for r, p in enumerate(params_order):
+        bs_order = list(emotions.BS_CONFIG.keys())
+        self._bs_table = QTableWidget(len(bs_order), len(emotions.EMOTIONS))
+        self._bs_table.setHorizontalHeaderLabels(emotions.EMOTIONS)
+        self._bs_table.setVerticalHeaderLabels(bs_order)
+        self._bs_cells = {}
+        for r, k in enumerate(bs_order):
             for c, e in enumerate(emotions.EMOTIONS):
-                sp = self._make_spin(cur.boosts.get(p, {}).get(e, 0.0), self._apply)
-                self._table.setCellWidget(r, c, sp)
-                self._cells[(p, e)] = sp
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        gb.layout().addWidget(self._table)
-        t1.addWidget(gb)
+                sp = self._make_spin(cur.bs_boosts.get(k, {}).get(e, 0.0), self._apply)
+                self._bs_table.setCellWidget(r, c, sp)
+                self._bs_cells[(k, e)] = sp
+        self._bs_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        gb.layout().addWidget(self._bs_table)
+        root.addWidget(gb)
 
-        # —— 耦合（Live2D 空间）——
-        gc = QGroupBox("跨参数耦合（门情绪开火时把目标参数抬向源；只抬不压）")
+        # —— 耦合（BS 空间）——
+        gc = QGroupBox("跨形状耦合（门情绪开火时把目标形状抬向源；只抬不压）")
         QVBoxLayout(gc)
         self._coup_checks, self._coup_spins = [], []
         for tgt, src, gate, k_def, _mb in self._base_couplings:
             row = QHBoxLayout()
-            cb = QCheckBox(f"{tgt.replace('Param', '')} ← {src.replace('Param', '')}（门={gate}）")
-            cur_k = next((c[3] for c in cur.couplings
+            cb = QCheckBox(f"{tgt} ← {src}（门={gate}）")
+            cur_k = next((c[3] for c in cur.bs_couplings
                           if c[0] == tgt and c[1] == src and c[2] == gate), None)
             cb.setChecked(cur_k is not None)
             cb.stateChanged.connect(self._apply)
@@ -610,30 +624,7 @@ class ShapingDialog(QDialog):
             self._coup_spins.append(sp)
         if self._extra_couplings:
             gc.layout().addWidget(QLabel(f"另有 {len(self._extra_couplings)} 条自定义耦合（JSON 配置）原样保留。"))
-        t1.addWidget(gc)
-        self._tabs.addTab(tab1, "Live2D 参数 (VTS)")
-
-        # —— Tab 2: BlendShape（VMC/OSC → 3D 工具）——
-        tab2 = QWidget()
-        t2 = QVBoxLayout(tab2)
-        gb2 = QGroupBox("情绪→BlendShape 附加放大系数（3D 输出；未列出的形状 1:1 透传）")
-        QVBoxLayout(gb2)
-        bs_order = list(emotions.BS_CONFIG.keys())
-        self._bs_table = QTableWidget(len(bs_order), len(emotions.EMOTIONS))
-        self._bs_table.setHorizontalHeaderLabels(emotions.EMOTIONS)
-        self._bs_table.setVerticalHeaderLabels(bs_order)
-        self._bs_cells = {}
-        for r, k in enumerate(bs_order):
-            for c, e in enumerate(emotions.EMOTIONS):
-                sp = self._make_spin(cur.bs_boosts.get(k, {}).get(e, 0.0), self._apply)
-                self._bs_table.setCellWidget(r, c, sp)
-                self._bs_cells[(k, e)] = sp
-        self._bs_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        gb2.layout().addWidget(self._bs_table)
-        t2.addWidget(gb2)
-        self._tabs.addTab(tab2, "BlendShape (VMC/OSC 3D)")
-
-        root.addWidget(self._tabs)
+        root.addWidget(gc)
 
         # —— 试表情 ——
         gt = QGroupBox("试表情（注入合成情绪值 1.5 秒，在目标软件里看塑造效果）")
@@ -667,30 +658,22 @@ class ShapingDialog(QDialog):
 
     # —— 收集/应用 ——
     def _collect(self):
-        boosts = {}
-        for (p, e), sp in self._cells.items():
-            if abs(sp.value()) > 1e-9:
-                boosts.setdefault(p, {})[e] = sp.value()
         bs_boosts = {}
         for (k, e), sp in self._bs_cells.items():
             if abs(sp.value()) > 1e-9:
                 bs_boosts.setdefault(k, {})[e] = sp.value()
-        couplings = []
+        bs_couplings = []
         for i, (tgt, src, gate, _k, mb) in enumerate(self._base_couplings):
             if self._coup_checks[i].isChecked():
-                couplings.append((tgt, src, gate, self._coup_spins[i].value(), mb))
-        couplings.extend(self._extra_couplings)
-        return emotions.Shaping(boosts=boosts, couplings=couplings, bs_boosts=bs_boosts)
+                bs_couplings.append((tgt, src, gate, self._coup_spins[i].value(), mb))
+        bs_couplings.extend(self._extra_couplings)
+        return emotions.Shaping(bs_boosts=bs_boosts, bs_couplings=bs_couplings)
 
     def _apply(self, *_):
         self._params.set_shaping(self._collect())
 
     def _reset(self):
         d = emotions.DEFAULT_SHAPING
-        for (p, e), sp in self._cells.items():
-            sp.blockSignals(True)
-            sp.setValue(d.boosts.get(p, {}).get(e, 0.0))
-            sp.blockSignals(False)
         for (k, e), sp in self._bs_cells.items():
             sp.blockSignals(True)
             sp.setValue(d.bs_boosts.get(k, {}).get(e, 0.0))
@@ -706,16 +689,12 @@ class ShapingDialog(QDialog):
 
     def refresh_from(self, shaping):
         """预设加载等场景：把外部 Shaping 同步到控件（不触发 _apply）。"""
-        for (p, e), sp in self._cells.items():
-            sp.blockSignals(True)
-            sp.setValue(shaping.boosts.get(p, {}).get(e, 0.0))
-            sp.blockSignals(False)
         for (k, e), sp in self._bs_cells.items():
             sp.blockSignals(True)
             sp.setValue(shaping.bs_boosts.get(k, {}).get(e, 0.0))
             sp.blockSignals(False)
         for i, (tgt, src, gate, k_def, _mb) in enumerate(self._base_couplings):
-            cur_k = next((c[3] for c in shaping.couplings
+            cur_k = next((c[3] for c in shaping.bs_couplings
                           if c[0] == tgt and c[1] == src and c[2] == gate), None)
             self._coup_checks[i].blockSignals(True)
             self._coup_checks[i].setChecked(cur_k is not None)
@@ -894,8 +873,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setObjectName("central")
         root = QVBoxLayout(central)
-        root.setContentsMargins(16, 14, 16, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(14, 10, 14, 10)
+        root.setSpacing(6)
 
         title = QLabel("FaceEQ")
         title.setObjectName("title")
@@ -904,27 +883,35 @@ class MainWindow(QMainWindow):
         root.addWidget(title)
         root.addWidget(sub)
 
-        # 摄像头选择
-        cam_row = QHBoxLayout()
-        cam_row.addWidget(QLabel("摄像头:"))
-        self.cam_combo = QComboBox()
-        for src in list_sources():
-            self.cam_combo.addItem(f"Camera {src}", src)
-        self.cam_combo.addItem("📱 手机 UDP (iFacialMocap/MeowFace)", "phone")
-        self.cam_combo.currentIndexChanged.connect(
-            lambda idx: setattr(self.params, "source", self.cam_combo.itemData(idx)))
-        cam_row.addWidget(self.cam_combo, 1)
-        root.addLayout(cam_row)
+        # 输入源（纯协议：不做本地面捕）
+        in_row = QHBoxLayout()
+        in_row.addWidget(QLabel("输入源:"))
+        self.input_combo = QComboBox()
+        self.input_combo.addItem("📱 手机/平板 UDP (iFacialMocap/MeowFace)", "phone")
+        self.input_combo.addItem("📡 VMC 输入 (VSeeFace/Warudo 等 PC 软件)", "vmc")
+        self.input_combo.currentIndexChanged.connect(self._on_input_kind)
+        in_row.addWidget(self.input_combo, 1)
+        in_row.addWidget(QLabel("端口:"))
+        self.input_port = QSpinBox()
+        self.input_port.setRange(1024, 65535)
+        self.input_port.setValue(self.params.input_port)
+        self.input_port.valueChanged.connect(self._push_input)
+        in_row.addWidget(self.input_port)
+        root.addLayout(in_row)
 
         # 输出目标
         g_out = QGroupBox("输出目标 Output")
         QVBoxLayout(g_out)
         out_row1 = QHBoxLayout()
-        out_row1.addWidget(QLabel("目标:"))
-        self.out_combo = QComboBox()
+        out_row1.addWidget(QLabel("启用:"))
+        self.out_checks = {}
         for k, label in OUTPUT_KINDS:
-            self.out_combo.addItem(label, k)
-        out_row1.addWidget(self.out_combo, 1)
+            cb = QCheckBox(label)
+            cb.setChecked(k in self.params.output_kinds)
+            cb.stateChanged.connect(self._push_output)
+            out_row1.addWidget(cb)
+            self.out_checks[k] = cb
+        out_row1.addStretch(1)
         g_out.layout().addLayout(out_row1)
         out_row2 = QHBoxLayout()
         out_row2.addWidget(QLabel("地址:"))
@@ -1112,10 +1099,11 @@ class MainWindow(QMainWindow):
         self.calib_btn.clicked.connect(self._on_calibrate)
         self.shape_btn.clicked.connect(self._open_shaping)
         self.trig_btn.clicked.connect(self._open_triggers)
-        self.out_combo.currentIndexChanged.connect(self._on_output_kind)
-        self.out_host.editingFinished.connect(self._push_output)
-        self.out_port.valueChanged.connect(self._push_output)
-        self._on_output_kind(0)   # 初始化提示文案/端口默认值
+        for cb in self.out_checks.values():
+            cb.stateChanged.connect(self._push_output)
+        self.input_port.valueChanged.connect(self._push_input)
+        self._on_input_kind(0)    # 初始化提示文案/端口默认值
+        self._push_output()
 
         # 滚动包装（所有内容构建完之后）：窗口不够高时滚动，不压扁组件
         scroll = QScrollArea()
@@ -1129,9 +1117,10 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("欢迎使用 FaceEQ")
         box.setText("三步开始：\n\n"
-                    "1. 上方选输入源（摄像头，或 📱 手机 UDP）\n"
-                    "2. 选输出目标（默认 VTS；Warudo 等 3D 软件选 VMC）\n"
-                    "3. 点「校准」照提示做 11 个表情——或先跳过，直接「开始」+\n"
+                    "1. 准备面捕源：手机/平板装 iFacialMocap 或 MeowFace，\n"
+                    "    或电脑装 VSeeFace/Warudo——FaceEQ 不自己做面捕，只做 EQ\n"
+                    "2. 上方选输入源，点「开始」按提示在源端填 IP/端口\n"
+                    "3. 点「校准」照提示做 11 个表情——或先跳过，直接勾输出目标 +\n"
                     "    预设下拉里的 ★ 内置人设试效果\n\n"
                     "提示：VTS 里请关掉自带摄像头跟踪（Camera → None）。\n\n"
                     "现在就校准吗？（推荐，约 2 分钟，按你的脸定制效果）")
@@ -1142,27 +1131,34 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is cal:
             self._on_calibrate()
 
-    # —— 输出目标 ——
-    def _on_output_kind(self, idx):
-        kind = self.out_combo.itemData(idx)
-        if kind != "vts":
-            self.out_port.setValue(OUTPUT_DEFAULT_PORT[kind])
-        for w in (self.out_host, self.out_port):
-            w.setEnabled(kind != "vts")
-        self.out_hint.setText({
-            "vts": "VTS：需在 VTS 设置勾选 Allow Plugin API access；首次连接会弹授权窗；"
-                   "并关掉 VTS 自带摄像头跟踪",
-            "vmc": "VMC：在目标软件（Warudo/VNyans/VSeeFace…）里开启 VMC 接收，端口对齐"
-                   "（默认 39540）；FaceEQ 发送放大后的 ARKit blendshape",
-            "osc": "OSC：自定义目标监听该端口（如 VRChat FT 桥 9000）；可在 osc_mapping.json "
-                   "里做参数名精确映射",
-        }[kind])
-        self._push_output()
+    # —— 输入源 / 输出目标 ——
+    def _on_input_kind(self, idx):
+        kind = self.input_combo.itemData(idx)
+        self.params.input_kind = kind
+        self.input_port.setValue(49983 if kind == "phone" else VMC_INPUT_PORT)
+        self._push_input()
+
+    def _push_input(self):
+        self.params.input_kind = self.input_combo.currentData()
+        self.params.input_port = self.input_port.value()
+
+    def _checked_kinds(self):
+        return [k for k, _label in OUTPUT_KINDS if self.out_checks[k].isChecked()]
 
     def _push_output(self):
-        self.params.set_output(self.out_combo.currentData(),
+        self.params.set_output(self._checked_kinds(),
                                self.out_host.text().strip() or "127.0.0.1",
                                self.out_port.value())
+        kinds = self._checked_kinds()
+        hints = []
+        if "vts" in kinds:
+            hints.append("VTS：勾选 Allow Plugin API access，并关掉自带摄像头跟踪")
+        if "vmc" in kinds:
+            hints.append("VMC：目标软件开 VMC 接收，端口对齐（默认 39540）")
+        if "osc" in kinds:
+            hints.append("OSC：目标监听对应端口；osc_mapping.json 可精确映射")
+        self.out_hint.setText("；".join(hints) if hints
+                              else "（未勾选任何输出——点开始后只跑管线不注入）")
 
     # —— 信号监视 ——
     @Slot(dict)
@@ -1296,18 +1292,23 @@ class MainWindow(QMainWindow):
             return
         dlg = QMessageBox(self)
         dlg.setWindowTitle("启动前确认")
-        out_note = {
-            "vts": "请先在 VTube Studio 把【摄像头跟踪关掉】(Camera → None/Off)，让 FaceEQ 接管参数注入。",
-            "vmc": "请在目标 3D 软件（Warudo/VNyans/VSeeFace 等）里开启 VMC 接收，端口与这里一致。",
-            "osc": "请确认 OSC 目标正在监听对应端口（VRChat FT 桥默认 9000）。",
-        }[self.params.output_kind]
-        if self.params.source == "phone":
-            dlg.setText("手机面捕模式：手机 app（iFacialMocap / MeowFace）里填\n\n"
-                        f"IP：{_best_local_ip()}\n端口：{PHONE_PORT}\n\n"
-                        "手机与电脑同一 WiFi 后开始发送；首次可能弹 Windows 防火墙提示，请放行。\n"
+        kinds = self._checked_kinds()
+        notes = {
+            "vts": "VTS：把【摄像头跟踪关掉】(Camera → None/Off)，并勾选 Allow Plugin API access。",
+            "vmc": "VMC：在目标 3D 软件（Warudo/VNyans/VSeeFace 等）里开启 VMC 接收，端口对齐。",
+            "osc": "OSC：确认目标正在监听对应端口（VRChat FT 桥默认 9000）。",
+        }
+        out_note = "；".join(notes[k] for k in kinds) if kinds \
+            else "未勾选任何输出——本次运行只跑管线（信号监视器可看）。"
+        if self.params.input_kind == "phone":
+            dlg.setText("手机/平板面捕模式：app（iFacialMocap / MeowFace）里填\n\n"
+                        f"IP：{_best_local_ip()}\n端口：{self.params.input_port}\n\n"
+                        "设备与电脑同一 WiFi 后开始发送；首次可能弹 Windows 防火墙提示，请放行。\n"
                         + out_note + "\n\n准备好后点「开始」。")
         else:
-            dlg.setText(out_note + "\n\n准备好后点「开始」。")
+            dlg.setText("VMC 输入模式：发送端软件（VSeeFace/Warudo 等）的 VMC 发送指向\n\n"
+                        f"127.0.0.1:{self.params.input_port}\n\n"
+                        + out_note + "\n\n准备好后点「开始」。")
         dlg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         dlg.setDefaultButton(QMessageBox.Ok)
         if dlg.exec() != QMessageBox.Ok:
@@ -1380,7 +1381,8 @@ class MainWindow(QMainWindow):
         self.calib_btn.setEnabled(False)
         self.statusBar().showMessage("校准中…（照右侧中英文提示做 11 个表情，GUI 保持响应）")
         self._calib_thread = QThread()
-        self._calib_runner = CalibrateRunner(self.params.source)
+        self._calib_runner = CalibrateRunner(self.params.input_kind,
+                                             self.params.input_port)
         self._calib_runner.moveToThread(self._calib_thread)
         self._calib_thread.started.connect(self._calib_runner.run)
         self._calib_runner.finished.connect(self._on_calibrate_done)
@@ -1521,4 +1523,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if getattr(sys, "frozen", False) and "--calibrate" in sys.argv:
+        # 打包版校准模式：FaceEQ.exe --calibrate → 跑校正向导而不是主面板
+        from faceeq.calibrate import main as calibrate_main
+        sys.exit(calibrate_main())
     main()

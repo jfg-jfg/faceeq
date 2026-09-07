@@ -1,11 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('models/face_landmarker.task', 'models'), ('custom_expressions.json', '.'), ('presets/builtin', 'presets/builtin')]
+datas = [('custom_expressions.json', '.'), ('presets/builtin', 'presets/builtin')]
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('mediapipe')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('sounddevice')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
