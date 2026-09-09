@@ -145,6 +145,13 @@ def main():
         "-vf", "split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer",
         "-loop", "0", args.out], check=True, capture_output=True)
     print(f"[gif] {args.out} ({os.path.getsize(args.out) / 1e6:.1f} MB)")
+    # MP4(B站/推特定稿):mpeg4 编码(本机 ffmpeg 的 libx264/h264_mf 构建异常,-22)
+    mp4 = os.path.splitext(args.out)[0] + ".mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-framerate", str(FPS),
+        "-i", os.path.join(tmp, "combo", "c_%04d.png"),
+        "-c:v", "mpeg4", "-q:v", "3", mp4], check=True, capture_output=True)
+    print(f"[mp4] {mp4} ({os.path.getsize(mp4) / 1e6:.1f} MB)")
 
 
 if __name__ == "__main__":
