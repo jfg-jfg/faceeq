@@ -6,6 +6,9 @@
 某些情绪。补现有工具只做 1:1 跟踪、表情「太平」的空白。**自己不做面捕**：手机/平板 app、
 PC 追踪软件，谁发 blendshape 就吃谁。
 
+![FaceEQ 对比演示](assets/eq-demo.gif)
+*同一份 TrueDepth 实录:左 = 原始追踪 1:1,右 = FaceEQ EQ(元气预设)。完整素材见 docs/marketing-kit.md。*
+
 ## 核心功能
 
 - **情绪 EQ**：全局 gain + 每情绪增强/抑制滑块（+1 放大、−1 压成扑克脸 = persona），拖动实时生效；
