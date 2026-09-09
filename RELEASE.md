@@ -14,8 +14,8 @@
 
 - [ ] `.venv/Scripts/python.exe -m pip install -r requirements.txt pyinstaller`
 - [ ] `PYTHONUTF8=1 .venv/Scripts/python.exe probes/build_release.py`
-- [ ] 产物自检：`dist/FaceEQ/FaceEQ.exe` 存在；目录含 `presets/builtin/`、
-      `custom_expressions.json`；`_internal` 无 mediapipe/cv2/models 残留（v0.2.0 起约 ≤140MB）
+- [x] 产物自检（v0.2.0 已过）：exe 存在；presets/custom_expressions 齐全；
+      `_internal` 无 mediapipe/cv2/models 残留；133MB
 - [ ] 干净环境语义冒烟：双击 exe → 主窗口出现 → 无 profile 时出首启动引导 →
       信号监视器动 → 退出无残留进程
 - [ ] 杀软误报检查（Windows Defender + 一款第三方）；被误报时在 README「排错」加白名单指引，
@@ -23,10 +23,9 @@
 
 ## 3. GitHub Release
 
-- [ ] `git tag v0.1.0 && git push --tags`
-- [ ] Release notes：功能清单 + 已知限制（webcam sad/disgust 需手机源；rig 上限声明）+ 升级说明
-- [ ] 上传 `FaceEQ-v0.1.0-win64.zip`（dist/FaceEQ 打 zip）
-- [ ] README 徽章/下载链接指向最新 Release
+- [x] ~~v0.1.0~~（2026-09-07 私有测试期）；**v0.2.0 已发布（2026-09-10，含 tag+notes+zip）**
+- [ ] 后续版本照旧：tag → push → notes → 传 zip → README 指向最新 Release
+- [ ] 渠道分发见 §4（itch.io / VTS wiki / Reddit / B站）——待用户执行
 
 ## 4. 渠道分发
 
