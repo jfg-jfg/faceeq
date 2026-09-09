@@ -18,8 +18,25 @@ from fbx_scan import load  # noqa: E402
 MODEL = os.path.join("models", "Resources", "v3", "Haru", "Haru.model3.json")
 FPS = 30
 W, H = 460, 720
-GENKI = {"happy": 1.0, "angry": 0.3, "sad": -0.4, "surprised": 0.8, "disgust": -0.4}
-GENKI_GAIN = 1.9
+DRAMATIC = {"happy": 1.0, "angry": 0.8, "sad": 0.6, "surprised": 1.0, "disgust": 0.3}
+DRAMATIC_GAIN = 2.4
+
+
+_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/simhei.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+]
+_FONT_PATH = next((p for p in _FONT_CANDIDATES if os.path.exists(p)), None)
+
+
+def _font(size):
+    from PIL import ImageFont
+    if _FONT_PATH:
+        try:
+            return ImageFont.truetype(_FONT_PATH, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 
 def resample(shapes, t):
@@ -39,8 +56,9 @@ def main():
     ap.add_argument("fbx")
     ap.add_argument("--out", default=os.path.join("assets", "eq-demo.gif"))
     ap.add_argument("--seconds", type=float, default=0)
-    ap.add_argument("--zoom", type=float, default=1.9)
-    ap.add_argument("--offset-y", type=float, default=-0.18, help="模型位移（窗口高度比例，负=下移）")
+    ap.add_argument("--weak", type=float, default=0.35,
+                    help="输入弱读缩放(模拟欠读追踪源:0.35=只有 35% 幅度)")
+    ap.add_argument("--speed", type=float, default=0.5, help="GIF 播放速率(0.5=慢一倍)")
     args = ap.parse_args()
 
     import glfw
@@ -57,10 +75,11 @@ def main():
     streams = []
     for i in range(n_frames):
         t = t0 + i / FPS
-        bs_raw = resample(shapes, t)
-        streams.append(bs_raw)
+        bs_full = resample(shapes, t)
+        streams.append({k: v * args.weak for k, v in bs_full.items()})   # 弱读输入
     print(f"回放 {t0:.1f}s–{t1:.1f}s → {n_frames} 帧 @ {FPS}fps")
 
+    from PIL import Image, ImageDraw
     from faceeq.frame import Frame
     from faceeq.mapping import base_map
     from faceeq.smooth import Smoother
@@ -94,7 +113,9 @@ def main():
     OUT_W = 460
     OUT_H = int(CROP_H * OUT_W / CROP_W)
 
-    def draw_capture(params, sm, path):
+    readouts = []   # 每帧 (raw读数, eq读数) 用于角标
+
+    def draw_capture(params, sm, path, readout=""):
         glfw.poll_events()
         live2d.clearBuffer()
         for name, val in sm.step(params).items():
@@ -105,34 +126,41 @@ def main():
         data = glReadPixels(0, 0, W, H, GL_RGB, GL_UNSIGNED_BYTE)
         img = Image.frombytes("RGB", (W, H), data).transpose(Image.FLIP_TOP_BOTTOM)
         face = img.crop(CROP).resize((OUT_W, OUT_H), Image.LANCZOS)
+        d = ImageDraw.Draw(face)
+        if readout:
+            d.text((10, OUT_H - 30), readout, font=_font(20), fill=(120, 210, 250))
         face.save(path)
         glfw.swap_buffers(win)
 
-    for i, bs_raw in enumerate(streams):
+    for i, bs_in in enumerate(streams):
         if glfw.window_should_close(win):
             n_frames = i
             break
-        emo = emotions.signals(bs_raw)
-        bs_eq = emotions.bs_amplify(bs_raw, emo, GENKI_GAIN, GENKI)
-        draw_capture(base_map(Frame(bs=bs_raw)), sm_raw,
-                     os.path.join(tmp, "raw", f"raw_{i:04d}.png"))
+        emo = emotions.signals(bs_in)
+        bs_eq = emotions.bs_amplify(bs_in, emo, DRAMATIC_GAIN, DRAMATIC)
+        key = "mouthSmileLeft" if emo["happy"] >= max(emo["sad"], emo["disgust"]) else "mouthFrownLeft"
+        ro_raw = f"{key} {bs_in.get(key, 0):.2f}"
+        ro_eq = f"{key} {bs_eq.get(key, 0):.2f}"
+        readouts.append((ro_raw, ro_eq))
+        draw_capture(base_map(Frame(bs=bs_in)), sm_raw,
+                     os.path.join(tmp, "raw", f"raw_{i:04d}.png"), ro_raw)
         draw_capture(base_map(Frame(bs=bs_eq)), sm_eq,
-                     os.path.join(tmp, "eq", f"eq_{i:04d}.png"))
+                     os.path.join(tmp, "eq", f"eq_{i:04d}.png"), ro_eq)
     live2d.dispose()
     glfw.terminate()
     print(f"[render] {n_frames} 帧 ×2 面板完成")
 
     # —— 合成 ——
     import subprocess
-    from PIL import Image, ImageDraw
     os.makedirs(os.path.join(tmp, "combo"), exist_ok=True)
+    delay_ms = int(1000 / FPS / args.speed)
     for i in range(n_frames):
         a = Image.open(os.path.join(tmp, "raw", f"raw_{i:04d}.png"))
         b = Image.open(os.path.join(tmp, "eq", f"eq_{i:04d}.png"))
         bar = Image.new("RGB", (OUT_W * 2, 42), (16, 18, 24))
         d = ImageDraw.Draw(bar)
-        d.text((OUT_W // 2 - 46, 13), "RAW  1:1", fill=(170, 170, 170))
-        d.text((OUT_W + OUT_W // 2 - 74, 13), "FaceEQ EQ (Genki)", fill=(90, 200, 250))
+        d.text((OUT_W // 2 - 46, 13), "WEAK TRACKER  1:1", fill=(170, 170, 170))
+        d.text((OUT_W + OUT_W // 2 - 78, 13), "FaceEQ EQ (Dramatic)", fill=(90, 200, 250))
         combo = Image.new("RGB", (OUT_W * 2, OUT_H + 42), (16, 18, 24))
         combo.paste(bar, (0, 0))
         combo.paste(a, (0, 42))
@@ -140,10 +168,13 @@ def main():
         combo.save(os.path.join(tmp, "combo", f"c_{i:04d}.png"))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     subprocess.run([
-        "ffmpeg", "-y", "-framerate", str(FPS),
-        "-i", os.path.join(tmp, "combo", "c_%04d.png"),
-        "-vf", "split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer",
-        "-loop", "0", args.out], check=True, capture_output=True)
+        "ffmpeg", "-y", "-framerate", "1000", "-i", args.out.replace(".gif", ".png"),
+        "-loop", "0", args.out], check=True, capture_output=True) if False else None
+    # PIL 直接拼 GIF(逐帧 delay,支持慢放)
+    frames_c = [Image.open(os.path.join(tmp, "combo", f"c_{i:04d}.png"))
+                for i in range(n_frames)]
+    frames_c[0].save(args.out, save_all=True, append_images=frames_c[1:],
+                     duration=delay_ms, loop=0, optimize=True)
     print(f"[gif] {args.out} ({os.path.getsize(args.out) / 1e6:.1f} MB)")
     # MP4(B站/推特定稿):mpeg4 编码(本机 ffmpeg 的 libx264/h264_mf 构建异常,-22)
     mp4 = os.path.splitext(args.out)[0] + ".mp4"
