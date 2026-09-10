@@ -7,6 +7,9 @@
 | 文件 | 用途 |
 |---|---|
 | `assets/eq-demo.gif` | **核心演示 GIF**:同一份 TrueDepth 实录,左「原始 1:1」右「FaceEQ EQ(元气预设)」双面板对比(6s 循环,356KB,直接贴 GitHub README / Reddit) |
+| `assets/eq-demo.mp4` | 演示 MP4(GIF 同源,细节更清楚,B站动态/推流用) |
+| `assets/eq-demo-long.mp4` | 完整版演示(12.6s 无声:中性→大笑→撇嘴→皱鼻→皱眉→眨眼,弱输入模拟×0.35+戏剧预设,左右对比) |
+| `assets/eq-demo-long-narrated.mp4` | **配音版成片(B站投稿直接用)**:上者 0.5× 慢放至 25.2s + 中文解说五条逐情绪踩点;台本与时间轴见 `probes/make_narrated_demo.py`,单条音频在 `assets/vo/`(edge-tts 晓晓,可重生成) |
 | `assets/shots/main-zh.png` / `main-en.png` | 主面板截图(B站用 zh,itch/Reddit 用 en) |
 | `assets/shots/shaping-zh.png` | 高级塑造矩阵截图 |
 | `assets/shots/monitor-zh.png` | 信号监视器截图 |

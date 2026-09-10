@@ -63,3 +63,5 @@ dist/
 build/
 assets/_gif_frames/
 assets/_demo_frames/
+
+.video_agent/
